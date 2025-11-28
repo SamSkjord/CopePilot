@@ -17,3 +17,6 @@ venv/
 ENV/
 *.log
 .DS_Store
+
+# Large map files
+assets/*.osm.pbf

@@ -2,13 +2,24 @@
 
 import argparse
 import time
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Protocol
 
 from .gps import GPSReader, Position
-from .osm import OSMFetcher
+from .map_loader import MapLoader, RoadNetwork
+from .path_projector import PathProjector, ProjectedPath
 from .corners import CornerDetector
 from .pacenotes import PacenoteGenerator
 from .audio import AudioPlayer
+from .geometry import haversine_distance
+from . import config
+
+
+class GPSInterface(Protocol):
+    """Protocol for GPS data sources."""
+    def connect(self) -> None: ...
+    def disconnect(self) -> None: ...
+    def read_position(self) -> Optional[Position]: ...
 
 
 class CopePilot:
@@ -16,31 +27,38 @@ class CopePilot:
 
     def __init__(
         self,
-        gps_port: str = "/dev/ttyUSB0",
-        lookahead_m: float = 500,
-        update_interval: float = 1.0,
+        gps: GPSInterface,
+        map_loader: MapLoader,
+        lookahead_m: float = config.LOOKAHEAD_DISTANCE_M,
+        update_interval: float = config.UPDATE_INTERVAL_S,
+        audio_enabled: bool = True,
+        visualize: bool = False,
     ):
-        self.gps = GPSReader(port=gps_port)
-        self.osm = OSMFetcher()
+        self.gps = gps
+        self.map_loader = map_loader
         self.corner_detector = CornerDetector()
         self.pacenote_gen = PacenoteGenerator(distance_threshold_m=lookahead_m)
-        self.audio = AudioPlayer()
+        self.audio = AudioPlayer() if audio_enabled else None
+        self.visualize = visualize
 
         self.lookahead = lookahead_m
         self.update_interval = update_interval
 
-        self._road_cache: dict = {}
+        self._network: Optional[RoadNetwork] = None
+        self._projector: Optional[PathProjector] = None
         self._last_fetch_pos: Optional[Position] = None
-        self._called_corners: set = set()
+        self._visualizer = None
 
     def run(self) -> None:
         """Main application loop."""
         print("CopePilot starting...")
+        print(f"Lookahead: {self.lookahead}m")
 
         self.gps.connect()
-        self.audio.start()
+        if self.audio:
+            self.audio.start()
 
-        print("GPS connected, waiting for fix...")
+        print("GPS ready, starting navigation...")
 
         try:
             while True:
@@ -49,78 +67,208 @@ class CopePilot:
         except KeyboardInterrupt:
             print("\nShutting down...")
         finally:
-            self.audio.stop()
+            if self.audio:
+                self.audio.stop()
             self.gps.disconnect()
 
     def _update_cycle(self) -> None:
-        """Single update cycle: read GPS, detect corners, call pacenotes."""
+        """Single update cycle: read GPS, project path, detect corners, call pacenotes."""
         pos = self.gps.read_position()
         if not pos:
             return
 
         # Fetch new road data if we've moved significantly
-        if self._should_fetch_roads(pos):
+        if self._should_refetch(pos):
             self._fetch_roads(pos)
 
-        # Detect corners on nearby roads
-        all_corners = []
-        for segment in self._road_cache.values():
-            corners = self.corner_detector.detect_corners(
-                segment.points, (pos.lat, pos.lon)
-            )
-            all_corners.extend(corners)
+        if not self._network or not self._projector:
+            return
 
-        # Generate and speak pacenotes
-        notes = self.pacenote_gen.generate(all_corners)
+        # Project path ahead based on heading
+        path = self._projector.project_path(
+            pos.lat, pos.lon, pos.heading, self.lookahead
+        )
+
+        if not path or len(path.points) < 5:
+            return
+
+        # Extract geometry from path
+        points = [(p.lat, p.lon) for p in path.points]
+
+        # Detect corners
+        corners = self.corner_detector.detect_corners(points)
+
+        # Generate pacenotes
+        notes = self.pacenote_gen.generate(corners, path.junctions)
+
+        # Speak/print notes that haven't been called yet
         for note in notes:
-            corner_key = f"{note.text}_{int(note.distance_m/50)}"
-            if corner_key not in self._called_corners:
-                self.audio.say(note.text, note.priority)
-                self._called_corners.add(corner_key)
+            if self.pacenote_gen.should_call(note):
+                if self.audio:
+                    self.audio.say(note.text, note.priority)
+                print(f"  [{note.distance_m:.0f}m] {note.text}")
 
-        # Clean up old called corners
-        self._cleanup_called_corners()
+        # Update visualization
+        if self._visualizer:
+            self._visualizer.update(pos.lat, pos.lon, pos.heading, path, corners)
 
-    def _should_fetch_roads(self, pos: Position) -> bool:
+        # Periodically clear old called notes
+        self.pacenote_gen.clear_called()
+
+    def _should_refetch(self, pos: Position) -> bool:
         """Check if we need to fetch new road data."""
-        if not self._last_fetch_pos:
+        if not self._last_fetch_pos or not self._network:
             return True
 
-        # Refetch if moved more than 500m from last fetch point
-        from .corners import CornerDetector
-        detector = CornerDetector()
-        distance = detector._haversine_distance(
-            (self._last_fetch_pos.lat, self._last_fetch_pos.lon),
-            (pos.lat, pos.lon),
+        distance = haversine_distance(
+            self._last_fetch_pos.lat, self._last_fetch_pos.lon,
+            pos.lat, pos.lon,
         )
-        return distance > 500
+        return distance > config.REFETCH_DISTANCE_M
 
     def _fetch_roads(self, pos: Position) -> None:
-        """Fetch road data from OSM."""
-        print(f"Fetching roads near {pos.lat:.4f}, {pos.lon:.4f}...")
-        segments = self.osm.fetch_roads_around(pos.lat, pos.lon, radius_m=2000)
-        self._road_cache = {s.way_id: s for s in segments}
-        self._last_fetch_pos = pos
-        print(f"Loaded {len(segments)} road segments")
+        """Fetch road data from OSM PBF."""
+        print(f"Loading roads near {pos.lat:.4f}, {pos.lon:.4f}...")
 
-    def _cleanup_called_corners(self) -> None:
-        """Remove old entries from called corners set."""
-        # Keep set from growing unbounded
-        if len(self._called_corners) > 100:
-            self._called_corners.clear()
+        try:
+            self._network = self.map_loader.load_around(
+                pos.lat, pos.lon, config.ROAD_FETCH_RADIUS_M
+            )
+            self._projector = PathProjector(self._network)
+            self._last_fetch_pos = pos
+
+            print(f"Loaded {len(self._network.ways)} roads, "
+                  f"{len(self._network.junctions)} junctions")
+
+            # Share network with simulator if it needs it for route building
+            if hasattr(self.gps, 'set_network'):
+                self.gps.set_network(self._network)
+
+            # Initialize visualizer if enabled
+            if self.visualize and not self._visualizer:
+                try:
+                    from .visualizer import MapVisualizer
+                    # Get route bounds from simulator if available
+                    route_bounds = None
+                    if hasattr(self.gps, 'get_route_bounds'):
+                        route_bounds = self.gps.get_route_bounds()
+                    self._visualizer = MapVisualizer(self._network, route_bounds)
+                    print("Visualization window opened")
+                except ImportError as e:
+                    print(f"Visualization unavailable: {e}")
+                    self.visualize = False
+        except Exception as e:
+            print(f"Error loading roads: {e}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="CopePilot - Rally pacenote assistant")
+    parser = argparse.ArgumentParser(
+        description="CopePilot - Rally pacenote style driving assistance"
+    )
+
+    # GPS source options
+    gps_group = parser.add_mutually_exclusive_group()
+    gps_group.add_argument(
+        "--gps-port",
+        default=config.GPS_PORT,
+        help=f"GPS serial port (default: {config.GPS_PORT})",
+    )
+    gps_group.add_argument(
+        "--simulate",
+        metavar="LAT,LON,HEADING",
+        help="Simulate GPS at location (e.g., 51.5,-0.1,90)",
+    )
+    gps_group.add_argument(
+        "--vbo",
+        type=Path,
+        help="Replay GPS from VBO file",
+    )
+
+    # General options
     parser.add_argument(
-        "--gps-port", default="/dev/ttyUSB0", help="GPS serial port"
+        "--lookahead",
+        type=float,
+        default=config.LOOKAHEAD_DISTANCE_M,
+        help=f"Lookahead distance in meters (default: {config.LOOKAHEAD_DISTANCE_M})",
     )
     parser.add_argument(
-        "--lookahead", type=float, default=500, help="Lookahead distance in meters"
+        "--map",
+        type=Path,
+        default=config.MAP_FILE,
+        help=f"OSM PBF map file (default: {config.MAP_FILE})",
     )
+    parser.add_argument(
+        "--speed",
+        type=float,
+        default=13.4,
+        help="Simulation speed in m/s (default: 13.4 = 30mph)",
+    )
+    parser.add_argument(
+        "--speed-multiplier",
+        type=float,
+        default=1.0,
+        help="Playback speed multiplier for VBO (default: 1.0)",
+    )
+    parser.add_argument(
+        "--no-audio",
+        action="store_true",
+        help="Disable audio output (print only)",
+    )
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Show map visualization window",
+    )
+
     args = parser.parse_args()
 
-    app = CopePilot(gps_port=args.gps_port, lookahead_m=args.lookahead)
+    # Create map loader
+    map_loader = MapLoader(args.map)
+
+    # Create GPS source
+    if args.simulate:
+        from .simulator import GPSSimulator
+        try:
+            parts = args.simulate.split(",")
+            lat, lon, heading = float(parts[0]), float(parts[1]), float(parts[2])
+        except (ValueError, IndexError):
+            parser.error("--simulate requires LAT,LON,HEADING format")
+
+        print(f"Simulation mode: {lat:.4f}, {lon:.4f}, heading {heading}°")
+        print(f"Speed: {args.speed} m/s ({args.speed * 3.6:.1f} km/h)")
+
+        gps = GPSSimulator(
+            start_lat=lat,
+            start_lon=lon,
+            start_heading=heading,
+            speed_mps=args.speed,
+        )
+
+    elif args.vbo:
+        from .simulator import VBOSimulator
+        if not args.vbo.exists():
+            parser.error(f"VBO file not found: {args.vbo}")
+
+        print(f"VBO playback mode: {args.vbo}")
+        print(f"Speed multiplier: {args.speed_multiplier}x")
+
+        gps = VBOSimulator(
+            vbo_path=str(args.vbo),
+            speed_multiplier=args.speed_multiplier,
+        )
+
+    else:
+        print(f"GPS mode: {args.gps_port}")
+        gps = GPSReader(port=args.gps_port)
+
+    # Create and run app
+    app = CopePilot(
+        gps=gps,
+        map_loader=map_loader,
+        lookahead_m=args.lookahead,
+        audio_enabled=not args.no_audio,
+        visualize=args.visualize,
+    )
     app.run()
 
 
