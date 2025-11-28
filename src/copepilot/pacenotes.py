@@ -112,9 +112,6 @@ class PacenoteGenerator:
 
     def _corner_to_note(self, corner: Corner) -> Optional[Pacenote]:
         """Convert a corner to a pacenote."""
-        direction = corner.direction.value
-        severity = self.SEVERITY_NAMES[corner.severity]
-
         parts = []
 
         # Distance callout
@@ -122,19 +119,29 @@ class PacenoteGenerator:
         if distance_call:
             parts.append(distance_call)
 
-        # Main call: "left three" or "hairpin right"
-        if corner.severity == 1:
-            parts.append(f"{severity} {direction}")
+        if corner.is_chicane and corner.exit_direction:
+            # Chicane: "chicane left right" or "chicane right left"
+            entry_dir = corner.direction.value
+            exit_dir = corner.exit_direction.value
+            parts.append(f"chicane {entry_dir} {exit_dir}")
         else:
-            parts.append(f"{direction} {severity}")
+            # Regular corner
+            direction = corner.direction.value
+            severity = self.SEVERITY_NAMES[corner.severity]
 
-        # Modifiers
-        if corner.tightens:
-            parts.append("tightens")
-        if corner.opens:
-            parts.append("opens")
-        if corner.long_corner:
-            parts.append("long")
+            # Main call: "left three" or "hairpin right"
+            if corner.severity == 1:
+                parts.append(f"{severity} {direction}")
+            else:
+                parts.append(f"{direction} {severity}")
+
+            # Modifiers
+            if corner.tightens:
+                parts.append("tightens")
+            if corner.opens:
+                parts.append("opens")
+            if corner.long_corner:
+                parts.append("long")
 
         text = " ".join(parts)
         priority = self._calculate_priority(corner)

@@ -32,13 +32,15 @@ class Corner:
     exit_distance: float   # Distance to exit
     apex_lat: float
     apex_lon: float
-    direction: Direction
+    direction: Direction   # Entry direction (or first turn direction for chicane)
     severity: int          # 1 (hairpin) to 6 (flat/slight)
     total_angle: float     # Total degrees turned
     min_radius: float      # Tightest radius in meters
     tightens: bool = False
     opens: bool = False
     long_corner: bool = False
+    is_chicane: bool = False  # True if this is a merged chicane
+    exit_direction: Optional[Direction] = None  # For chicanes: the second turn direction
 
 
 # Rally pacenote severity scale based on minimum radius:
@@ -86,7 +88,11 @@ class CornerDetector:
         straight_fill_distance: float = 100.0,    # Add cuts every N meters in straights
         min_corner_angle: float = config.CORNER_MIN_ANGLE_DEG,
         min_corner_radius: float = config.CORNER_MIN_RADIUS_M,
-        merge_same_direction: bool = True
+        merge_same_direction: bool = True,
+        # Chicane detection parameters
+        merge_chicanes: bool = True,
+        max_chicane_gap: float = 30.0,            # Max gap between corners to merge as chicane
+        max_chicane_length: float = 300.0         # Max total length of merged chicane
     ):
         self.curvature_peak_threshold = curvature_peak_threshold
         self.min_cut_distance = min_cut_distance
@@ -94,6 +100,9 @@ class CornerDetector:
         self.min_corner_angle = min_corner_angle
         self.min_corner_radius = min_corner_radius
         self.merge_same_direction = merge_same_direction
+        self.merge_chicanes = merge_chicanes
+        self.max_chicane_gap = max_chicane_gap
+        self.max_chicane_length = max_chicane_length
 
     def detect_corners(
         self,
@@ -136,6 +145,10 @@ class CornerDetector:
 
         # Convert corner segments to Corner objects
         corners = self._segments_to_corners(segments, points, curvatures, distances)
+
+        # Merge chicanes (consecutive opposite-direction corners) if enabled
+        if self.merge_chicanes:
+            corners = self._merge_chicanes(corners, points)
 
         return corners
 
@@ -617,3 +630,94 @@ class CornerDetector:
                 return False, True
 
         return False, False
+
+    def _merge_chicanes(
+        self,
+        corners: List[Corner],
+        points: List[Tuple[float, float]]
+    ) -> List[Corner]:
+        """
+        Merge consecutive opposite-direction corners into chicanes.
+
+        A chicane is defined as:
+        - Two consecutive corners with opposite directions (left-right or right-left)
+        - Gap between them is less than max_chicane_gap
+        - Total span is less than max_chicane_length
+
+        Args:
+            corners: List of detected corners
+            points: Path points for apex lookup
+
+        Returns:
+            List of corners with chicanes merged
+        """
+        if len(corners) < 2:
+            return corners
+
+        merged = []
+        i = 0
+
+        while i < len(corners):
+            current = corners[i]
+
+            # Check if we can merge with next corner as a chicane
+            if i + 1 < len(corners):
+                next_corner = corners[i + 1]
+
+                # Check chicane conditions
+                gap = next_corner.entry_distance - current.exit_distance
+                total_length = next_corner.exit_distance - current.entry_distance
+                opposite_directions = current.direction != next_corner.direction
+
+                if (opposite_directions and
+                    gap <= self.max_chicane_gap and
+                    total_length <= self.max_chicane_length):
+
+                    # Merge into chicane
+                    # Use the tighter radius as min_radius
+                    min_radius = min(current.min_radius, next_corner.min_radius)
+
+                    # Total angle is sum of both corners
+                    total_angle = current.total_angle + next_corner.total_angle
+
+                    # Apex is the tighter of the two
+                    if current.min_radius <= next_corner.min_radius:
+                        apex_distance = current.apex_distance
+                        apex_lat = current.apex_lat
+                        apex_lon = current.apex_lon
+                    else:
+                        apex_distance = next_corner.apex_distance
+                        apex_lat = next_corner.apex_lat
+                        apex_lon = next_corner.apex_lon
+
+                    # Severity based on the tighter corner
+                    severity = self._classify_severity(min_radius)
+
+                    # Long if total span > 50m
+                    long_corner = total_length > 50
+
+                    chicane = Corner(
+                        entry_distance=current.entry_distance,
+                        apex_distance=apex_distance,
+                        exit_distance=next_corner.exit_distance,
+                        apex_lat=apex_lat,
+                        apex_lon=apex_lon,
+                        direction=current.direction,  # Entry direction
+                        severity=severity,
+                        total_angle=total_angle,
+                        min_radius=min_radius,
+                        tightens=False,
+                        opens=False,
+                        long_corner=long_corner,
+                        is_chicane=True,
+                        exit_direction=next_corner.direction,  # Exit direction
+                    )
+                    merged.append(chicane)
+                    i += 2  # Skip both corners
+                    continue
+
+            # No merge - add current corner as-is
+            merged.append(current)
+            i += 1
+
+        return merged
