@@ -28,9 +28,24 @@ Rally pacenote style driving assistance for your daily commute. Uses GPS and Ope
 
 ## Installation
 
+### Raspberry Pi
+
 ```bash
 # Install system dependencies
-sudo apt install espeak python3-pip
+sudo apt install espeak-ng sox libsox-fmt-all python3-pip
+
+# For better quality voice (optional)
+sudo apt install libttspico-utils
+
+# Install CopePilot
+pip install -e .
+```
+
+### macOS
+
+```bash
+# Install sox for audio effects
+brew install sox
 
 # Install CopePilot
 pip install -e .
