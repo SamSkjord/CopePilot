@@ -1,0 +1,48 @@
+mode: merged
+fade: 0.0
+helper/and, , NickyGrist.mp3, 0.000, 0.232
+helper/on, , NickyGrist.mp3, 0.232, 0.728
+left/hairpin, , NickyGrist.mp3, 0.728, 1.538
+left/two, , NickyGrist.mp3, 1.538, 2.383
+left/three, , NickyGrist.mp3, 2.383, 3.309
+left/four, , NickyGrist.mp3, 3.309, 4.232
+left/five, , NickyGrist.mp3, 4.232, 5.157
+left/six, , NickyGrist.mp3, 5.157, 5.981
+right/hairpin, , NickyGrist.mp3, 5.981, 6.744
+right/two, , NickyGrist.mp3, 6.744, 7.567
+right/three, , NickyGrist.mp3, 7.567, 8.377
+right/four, , NickyGrist.mp3, 8.378, 9.322
+right/five, , NickyGrist.mp3, 9.322, 10.202
+right/six, , NickyGrist.mp3, 10.202, 10.956
+straight/20 m, , NickyGrist.mp3, 10.956, 11.351
+straight/30 m, , NickyGrist.mp3, 11.351, 12.004
+straight/40 m, , NickyGrist.mp3, 12.004, 12.735
+straight/50 m, , NickyGrist.mp3, 12.735, 13.388
+straight/70 m, , NickyGrist.mp3, 13.388, 14.067
+straight/100 m, , NickyGrist.mp3, 14.067, 14.945
+straight/200 m, , NickyGrist.mp3, 14.945, 15.743
+straight/300 m, , NickyGrist.mp3, 15.743, 16.769
+straight/400 m, , NickyGrist.mp3, 16.769, 17.747
+straight/500 m, , NickyGrist.mp3, 17.747, 18.825
+hints/cut, , NickyGrist.mp3, 18.825, 19.429
+hints/do not cut, , NickyGrist.mp3, 19.429, 20.279
+hints/long, , NickyGrist.mp3, 20.279, 20.883
+hints/very long, , NickyGrist.mp3, 20.882, 21.796
+hints/tightens, , NickyGrist.mp3, 21.797, 22.488
+hints/open, , NickyGrist.mp3, 22.487, 22.998
+hints/caution, , NickyGrist.mp3, 22.998, 23.968
+hints/keep left, , NickyGrist.mp3, 23.968, 24.548
+hints/keep right, , NickyGrist.mp3, 24.549, 25.129
+miscellaneous/big jump, , NickyGrist.mp3, 25.129, 26.096
+miscellaneous/jump, , NickyGrist.mp3, 26.095, 26.675
+miscellaneous/overcrest, , NickyGrist.mp3, 26.676, 27.486
+miscellaneous/over bridge, , NickyGrist.mp3, 27.486, 28.066
+miscellaneous/narrows, , NickyGrist.mp3, 28.066, 28.693
+on/tarmac, , NickyGrist.mp3, 28.693, 29.790
+on/gravel, , NickyGrist.mp3, 29.790, 30.574
+extras/finish, , NickyGrist.mp3, 30.574, 31.645
+extras/start/get ready…, , NickyGrist.mp3, 31.645, 32.429
+extras/start/3…, , NickyGrist.mp3, 32.429, 33.007
+extras/start/2…, , NickyGrist.mp3, 33.007, 33.521
+extras/start/1…, , NickyGrist.mp3, 33.521, 33.883
+extras/start/go!, , NickyGrist.mp3, 33.883, 34.333
