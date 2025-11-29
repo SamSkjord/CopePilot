@@ -247,6 +247,10 @@ class AudioPlayer:
                 sample_keys.append("long")
                 i += 1
                 continue
+            elif parts[i] == "caution":
+                sample_keys.append("caution")
+                i += 1
+                continue
 
             # Skip unknown words
             i += 1

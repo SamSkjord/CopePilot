@@ -164,7 +164,7 @@ class PacenoteGenerator:
             parts.append(distance_call)
 
         # Warning - road ends, must turn
-        parts.append("junction")
+        parts.append("caution")
 
         text = " ".join(parts)
 
