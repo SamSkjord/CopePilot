@@ -21,8 +21,8 @@ JUNCTION_WARN_DISTANCE_M = 200  # Warn about T-junctions this far ahead
 HEADING_TOLERANCE_DEG = 30.0    # Roads within this angle of heading are "straight on"
 
 # Audio
-TTS_VOICE = "en-gb"
-TTS_SPEED = 175
+TTS_VOICE = "Daniel"  # British male voice (macOS), falls back to en-gb on Linux
+TTS_SPEED = 210  # Words per minute (faster for rally style)
 
 # GPS
 GPS_PORT = "/dev/ttyUSB0"
