@@ -10,14 +10,25 @@ Rally pacenote style driving assistance for your daily commute. Uses GPS and Ope
 "three hundred... left four... one fifty... right three tightens..."
 ```
 
+## Features
+
+- Real co-driver voice using Nicky Grist audio samples
+- Corner detection with severity ratings (1-6)
+- Bridge callouts ("over bridge")
+- T-junction warnings
+- Chicane detection (left-right / right-left sequences)
+- Visualization mode for testing
+- VBO file replay from lap-timing-system
+- Fast PBF loading with automatic caching
+
 ## How It Works
 
 1. GPS provides current position and heading
-2. Loads road network from local OSM PBF file around your location
+2. Loads road network from local OSM PBF file (cached for fast subsequent loads)
 3. Projects path ahead based on current heading (assumes straight-on at junctions)
 4. Detects corners using ASC (Automated Segmentation based on Curvature) algorithm
 5. Calls out corners with rally-style severity (1=hairpin to 6=flat)
-6. Warns about T-junctions where you'll need to stop
+6. Warns about T-junctions, bridges, and chicanes
 
 ## Hardware Requirements
 
@@ -34,8 +45,8 @@ Rally pacenote style driving assistance for your daily commute. Uses GPS and Ope
 # Install system dependencies
 sudo apt install espeak-ng sox libsox-fmt-all python3-pip
 
-# For better quality voice (optional)
-sudo apt install libttspico-utils
+# For osmium (PBF parsing)
+sudo apt install python3-osmium
 
 # Install CopePilot
 pip install -e .
@@ -47,33 +58,47 @@ pip install -e .
 # Install sox for audio effects
 brew install sox
 
+# Install osmium
+pip install osmium
+
 # Install CopePilot
 pip install -e .
 ```
+
+## Audio Samples
+
+For authentic rally co-driver audio, place Nicky Grist sample files in `assets/NickyGrist/`:
+- `NickyGrist.mp3` - Audio file containing all samples
+- `NickyGrist.txt` - Timing markers for each sample
+
+The system will fall back to TTS with radio effect if samples aren't available.
 
 ## Usage
 
 ```bash
 # Run with real GPS
-copepilot --gps-port /dev/ttyACM0
+python3 -m src.copepilot.main --gps-port /dev/ttyACM0
 
 # Simulate driving from a location (lat,lon,heading)
-copepilot --simulate 51.46,-2.46,0 --no-audio
+python3 -m src.copepilot.main --simulate 51.46,-2.46,0
 
 # Simulate with visualization window
-copepilot --simulate 51.46,-2.46,0 --visualize --no-audio
+python3 -m src.copepilot.main --simulate 51.46,-2.46,0 --visualize
 
 # Simulate at different speed (m/s)
-copepilot --simulate 52.0,-1.0,180 --speed 20
+python3 -m src.copepilot.main --simulate 52.0,-1.0,180 --speed 20
 
 # Replay a VBO file from lap-timing-system
-copepilot --vbo /path/to/Driver1.vbo --speed-multiplier 3
+python3 -m src.copepilot.main --vbo /path/to/Driver1.vbo --speed-multiplier 3
 
 # Adjust lookahead distance
-copepilot --simulate 51.5,-0.1,90 --lookahead 500
+python3 -m src.copepilot.main --simulate 51.5,-0.1,90 --lookahead 500
 
 # Specify a different map file
-copepilot --simulate 51.46,-2.46,0 --map /path/to/region.osm.pbf
+python3 -m src.copepilot.main --simulate 51.46,-2.46,0 --map /path/to/region.osm.pbf
+
+# Disable audio (print only)
+python3 -m src.copepilot.main --simulate 51.46,-2.46,0 --no-audio
 ```
 
 ## Configuration
@@ -107,17 +132,33 @@ Based on corner radius:
 - **opens** - corner opens up after apex
 - **long** - corner spans more than 50m
 
+### Additional Callouts
+
+- **over bridge** - road crosses a bridge
+- **caution** - approaching a T-junction
+- **chicane** - left-right or right-left sequence (e.g., "left four right three")
+
 ## Example Output
 
 ```
 CopePilot starting...
 Loading roads near 51.4600, -2.4600...
+  Loading cached roads from gloucestershire-251127.osm.roads.pkl...
+  Loaded 91278 roads from cache
 Loaded 1240 roads, 156 junctions
+GPS ready, starting navigation...
   [200m] two hundred right five tightens long
-  [400m] four hundred left six long
+  [400m] over bridge
+  [450m] left four right three
   [624m] left five tightens long
   [797m] right three opens long
 ```
+
+## PBF Caching
+
+On first run, CopePilot extracts all roads from the PBF file and saves them to a pickle cache file (e.g., `gloucestershire-251127.osm.roads.pkl`). Subsequent runs load from this cache, which is much faster.
+
+The cache is automatically rebuilt if the PBF file is newer than the cache.
 
 ## Corner Detection
 
@@ -144,6 +185,23 @@ wget https://download.geofabrik.de/europe/britain-and-ireland-latest.osm.pbf
 ```
 
 Place the PBF file in the `assets/` directory or specify with `--map`.
+
+## Project Structure
+
+```
+src/copepilot/
+├── main.py          # Application entry point and main loop
+├── config.py        # Configuration constants
+├── gps.py           # GPS reader (serial NMEA)
+├── simulator.py     # GPS simulation and VBO replay
+├── map_loader.py    # OSM PBF parsing and caching
+├── path_projector.py # Path projection along roads
+├── corners.py       # Corner detection (ASC algorithm)
+├── pacenotes.py     # Pacenote generation
+├── audio.py         # Audio playback (samples + TTS)
+├── visualizer.py    # Matplotlib visualization
+└── geometry.py      # Geometric utilities
+```
 
 ## License
 

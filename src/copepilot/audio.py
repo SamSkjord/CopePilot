@@ -122,13 +122,24 @@ class AudioPlayer:
         self._running = True
         self._thread = threading.Thread(target=self._playback_loop, daemon=True)
         self._thread.start()
+        # Warm up sox to avoid delay on first audio (loads libraries)
+        if self._has_sox:
+            try:
+                warmup_file = os.path.join(self._temp_dir, "warmup.wav")
+                subprocess.run(
+                    ["sox", "-n", "-r", "44100", "-c", "1", warmup_file, "trim", "0", "0.01"],
+                    capture_output=True,
+                    timeout=1,
+                )
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+                pass
 
     def stop(self) -> None:
         """Stop the audio playback thread."""
         self._running = False
         if self._thread:
             self._thread.join(timeout=1)
-        # Clean up temp files
+        # Clean up temp files (but not recording files)
         try:
             for f in os.listdir(self._temp_dir):
                 os.remove(os.path.join(self._temp_dir, f))

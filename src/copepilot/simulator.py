@@ -51,6 +51,8 @@ class GPSSimulator:
             self._network = network
             self._projector = PathProjector(network)
             self._build_route()
+            # Reset time so first read_position doesn't jump due to loading delay
+            self._last_update = time.time()
 
     def disconnect(self) -> None:
         """Clean up."""
@@ -77,7 +79,10 @@ class GPSSimulator:
         )
 
         if path and path.points:
-            self._route_points = [(p.lat, p.lon) for p in path.points]
+            # Start route from actual starting position (user-specified)
+            # then continue along the projected road path
+            self._route_points = [(self.current_lat, self.current_lon)]
+            self._route_points.extend((p.lat, p.lon) for p in path.points)
             self._route_index = 0
             print(f"Built simulation route with {len(self._route_points)} points")
         else:
@@ -88,6 +93,10 @@ class GPSSimulator:
         now = time.time()
         dt = now - self._last_update
         self._last_update = now
+
+        # Cap dt to prevent large jumps from unexpected delays (but allow normal intervals)
+        # Max 2s covers normal operation while preventing startup jumps
+        dt = min(dt, 2.0)
 
         if self._route_points and self._route_index < len(self._route_points) - 1:
             # Follow the pre-built route
@@ -101,11 +110,11 @@ class GPSSimulator:
         distance_to_travel = self.speed * dt
 
         while distance_to_travel > 0 and self._route_index < len(self._route_points) - 1:
-            current = self._route_points[self._route_index]
             next_pt = self._route_points[self._route_index + 1]
 
+            # Distance from current position to next waypoint
             dist_to_next = haversine_distance(
-                current[0], current[1], next_pt[0], next_pt[1]
+                self.current_lat, self.current_lon, next_pt[0], next_pt[1]
             )
 
             if distance_to_travel >= dist_to_next:
@@ -114,13 +123,13 @@ class GPSSimulator:
                 self._route_index += 1
                 self.current_lat, self.current_lon = next_pt
             else:
-                # Interpolate along segment
-                fraction = distance_to_travel / dist_to_next
-                self.current_lat = current[0] + fraction * (next_pt[0] - current[0])
-                self.current_lon = current[1] + fraction * (next_pt[1] - current[1])
+                # Interpolate from current position toward next waypoint
+                fraction = distance_to_travel / dist_to_next if dist_to_next > 0 else 0
+                self.current_lat = self.current_lat + fraction * (next_pt[0] - self.current_lat)
+                self.current_lon = self.current_lon + fraction * (next_pt[1] - self.current_lon)
                 distance_to_travel = 0
 
-            # Update heading
+            # Update heading toward next waypoint
             if self._route_index < len(self._route_points) - 1:
                 next_pt = self._route_points[self._route_index + 1]
                 self.current_heading = bearing(

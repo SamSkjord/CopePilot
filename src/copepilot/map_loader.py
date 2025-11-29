@@ -1,6 +1,8 @@
 """Load road network from OSM PBF file."""
 
 import math
+import os
+import pickle
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 from pathlib import Path
@@ -154,10 +156,84 @@ class MapLoader:
             raise ImportError(
                 "osmium not available. Install with: pip install osmium"
             )
-        self.pbf_path = pbf_path
-        self._cache: Optional[RoadNetwork] = None
-        self._cache_center: Optional[Tuple[float, float]] = None
-        self._cache_radius: float = 0
+        self.pbf_path = Path(pbf_path)
+        self._cache_file = self.pbf_path.with_suffix(".roads.pkl")
+        self._full_network: Optional[RoadNetwork] = None
+        self._query_cache: Optional[RoadNetwork] = None
+        self._query_cache_center: Optional[Tuple[float, float]] = None
+        self._query_cache_radius: float = 0
+
+    def _get_full_network(self) -> RoadNetwork:
+        """Get the full road network, loading from cache or PBF."""
+        if self._full_network:
+            return self._full_network
+
+        # Try loading from cache file
+        if self._cache_file.exists():
+            pbf_mtime = os.path.getmtime(self.pbf_path)
+            cache_mtime = os.path.getmtime(self._cache_file)
+            if cache_mtime > pbf_mtime:
+                try:
+                    print(f"  Loading cached roads from {self._cache_file.name}...")
+                    with open(self._cache_file, "rb") as f:
+                        self._full_network = pickle.load(f)
+                    print(f"  Loaded {len(self._full_network.ways)} roads from cache")
+                    return self._full_network
+                except Exception as e:
+                    print(f"  Cache load failed: {e}, rebuilding...")
+
+        # Extract all roads from PBF
+        print(f"  Extracting roads from PBF (first time only)...")
+        self._full_network = self._extract_all_roads()
+
+        # Save to cache
+        try:
+            print(f"  Saving cache to {self._cache_file.name}...")
+            with open(self._cache_file, "wb") as f:
+                pickle.dump(self._full_network, f)
+            size_mb = os.path.getsize(self._cache_file) / 1024 / 1024
+            print(f"  Cache saved ({size_mb:.1f} MB)")
+        except Exception as e:
+            print(f"  Warning: Could not save cache: {e}")
+
+        return self._full_network
+
+    def _extract_all_roads(self) -> RoadNetwork:
+        """Extract all roads from the PBF file."""
+        # Use very large bounds to get everything
+        bounds = (-90, -180, 90, 180)
+        handler = PBFRoadHandler(bounds)
+        handler.apply_file(str(self.pbf_path), locations=True)
+        print(f"  Found {len(handler.ways)} roads, {len(handler.nodes)} nodes")
+
+        # Build network
+        network = RoadNetwork()
+
+        for nid, node in handler.nodes.items():
+            if nid in handler.needed_nodes:
+                network.nodes[nid] = node
+
+        for wid, way in handler.ways.items():
+            if all(nid in network.nodes for nid in way.nodes):
+                network.ways[wid] = way
+                for nid in way.nodes:
+                    if nid not in network.node_to_ways:
+                        network.node_to_ways[nid] = []
+                    network.node_to_ways[nid].append(wid)
+
+        # Build junctions
+        for nid, way_ids in network.node_to_ways.items():
+            if len(way_ids) >= 2:
+                node = network.nodes[nid]
+                network.junctions[nid] = Junction(
+                    node_id=nid,
+                    lat=node.lat,
+                    lon=node.lon,
+                    connected_ways=way_ids,
+                    is_t_junction=self._is_t_junction(nid, way_ids, network),
+                )
+
+        return network
 
     def load_around(
         self,
@@ -170,71 +246,57 @@ class MapLoader:
 
         Uses caching - if we already have data covering this area, returns cache.
         """
-        # Check if cache covers this request
-        if self._cache and self._cache_center:
+        # Check if query cache covers this request
+        if self._query_cache and self._query_cache_center:
             dist = haversine_distance(
                 lat, lon,
-                self._cache_center[0], self._cache_center[1]
+                self._query_cache_center[0], self._query_cache_center[1]
             )
-            # If new center is within half the cached radius, reuse cache
-            if dist < self._cache_radius / 2:
-                return self._cache
+            if dist < self._query_cache_radius / 2:
+                return self._query_cache
 
-        # Calculate bounds (approximate, good enough for filtering)
-        # 1 degree lat ≈ 111km
+        # Get full network (from cache or PBF)
+        full_network = self._get_full_network()
+
+        # Calculate bounds
         lat_delta = radius_m / 111000
-        # 1 degree lon varies by latitude
         lon_delta = radius_m / (111000 * math.cos(math.radians(lat)))
+        min_lat, max_lat = lat - lat_delta, lat + lat_delta
+        min_lon, max_lon = lon - lon_delta, lon + lon_delta
 
-        bounds = (
-            lat - lat_delta,
-            lon - lon_delta,
-            lat + lat_delta,
-            lon + lon_delta,
-        )
-
-        # Load from PBF
-        print(f"  Scanning PBF file (this may take a minute for large files)...")
-        handler = PBFRoadHandler(bounds)
-
-        # Two-pass: first collect ways, then nodes
-        handler.apply_file(str(self.pbf_path), locations=True)
-        print(f"  Found {len(handler.ways)} roads, resolving nodes...")
-
-        # Build network
+        # Filter to region
         network = RoadNetwork()
 
-        # Filter nodes to only those within bounds and referenced by ways
-        for nid, node in handler.nodes.items():
-            if nid in handler.needed_nodes:
+        # Find nodes in bounds
+        for nid, node in full_network.nodes.items():
+            if min_lat <= node.lat <= max_lat and min_lon <= node.lon <= max_lon:
                 network.nodes[nid] = node
 
-        # Add ways that have all nodes available
-        for wid, way in handler.ways.items():
-            if all(nid in network.nodes for nid in way.nodes):
+        # Find ways with at least one node in bounds, include all their nodes
+        for wid, way in full_network.ways.items():
+            if any(nid in network.nodes for nid in way.nodes):
                 network.ways[wid] = way
-                # Build node-to-way index
+                # Add all nodes of this way
                 for nid in way.nodes:
-                    if nid not in network.node_to_ways:
-                        network.node_to_ways[nid] = []
-                    network.node_to_ways[nid].append(wid)
+                    if nid not in network.nodes and nid in full_network.nodes:
+                        network.nodes[nid] = full_network.nodes[nid]
 
-        # Identify junctions (nodes shared by multiple ways)
+        # Build node-to-way index for filtered ways
+        for wid, way in network.ways.items():
+            for nid in way.nodes:
+                if nid not in network.node_to_ways:
+                    network.node_to_ways[nid] = []
+                network.node_to_ways[nid].append(wid)
+
+        # Copy junctions
         for nid, way_ids in network.node_to_ways.items():
-            if len(way_ids) >= 2:
-                node = network.nodes[nid]
-                network.junctions[nid] = Junction(
-                    node_id=nid,
-                    lat=node.lat,
-                    lon=node.lon,
-                    connected_ways=way_ids,
-                    is_t_junction=self._is_t_junction(nid, way_ids, network),
-                )
+            if len(way_ids) >= 2 and nid in full_network.junctions:
+                network.junctions[nid] = full_network.junctions[nid]
 
-        # Cache result
-        self._cache = network
-        self._cache_center = (lat, lon)
-        self._cache_radius = radius_m
+        # Cache query result
+        self._query_cache = network
+        self._query_cache_center = (lat, lon)
+        self._query_cache_radius = radius_m
 
         return network
 

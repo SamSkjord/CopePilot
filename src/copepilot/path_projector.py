@@ -43,6 +43,7 @@ class JunctionInfo:
     is_t_junction: bool
     exit_bearings: List[float]  # Bearings of roads leaving junction
     straight_on_bearing: Optional[float]  # Which way is "straight on"
+    node_id: int = 0  # Node ID for deduplication
 
 
 @dataclass
@@ -246,6 +247,7 @@ class PathProjector:
                     is_t_junction=junction.is_t_junction,
                     exit_bearings=exit_bearings,
                     straight_on_bearing=straight_bearing,
+                    node_id=junction.node_id,
                 ))
 
                 # Follow straight-on road

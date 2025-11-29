@@ -19,7 +19,11 @@ from .path_projector import ProjectedPath
 class MapVisualizer:
     """Real-time map visualization using matplotlib."""
 
-    def __init__(self, network: RoadNetwork, route_bounds: tuple = None):
+    def __init__(
+        self,
+        network: RoadNetwork,
+        route_bounds: tuple = None,
+    ):
         """
         Initialize visualizer.
 
@@ -31,7 +35,8 @@ class MapVisualizer:
             raise ImportError("matplotlib required: pip install matplotlib")
 
         self.network = network
-        self.fig, self.ax = plt.subplots(1, 1, figsize=(10, 10))
+
+        self.fig, self.ax = plt.subplots(1, 1, figsize=(10, 10), dpi=100)
         self.ax.set_aspect('equal')
         self.ax.set_facecolor('#1a1a1a')
 
@@ -142,19 +147,25 @@ class MapVisualizer:
                 )
                 self._corner_markers.append(text)
 
-        # Draw car position (small dot)
+        # Draw car position (larger, more visible marker)
         self._car_marker = self.ax.plot(
-            lon, lat, 'o', color='lime', markersize=6
+            lon, lat, 'o', color='lime', markersize=12, markeredgecolor='white', markeredgewidth=2
         )[0]
 
-        # Set view bounds based on path if not already set
-        if path and path.points and self._bounds is None:
-            path_lons = [p.lon for p in path.points]
-            path_lats = [p.lat for p in path.points]
-            margin = 0.0005
-            self._bounds = (min(path_lats), max(path_lats), min(path_lons), max(path_lons))
-            self.ax.set_xlim(self._bounds[2] - margin, self._bounds[3] + margin)
-            self.ax.set_ylim(self._bounds[0] - margin, self._bounds[1] + margin)
+        # Use fixed bounds based on route (set once), so car visibly moves
+        if self._bounds is None and path and path.points:
+            # Get route extent
+            all_lats = [p.lat for p in path.points]
+            all_lons = [p.lon for p in path.points]
+            margin = 0.002
+            self._bounds = (
+                min(all_lats) - margin,
+                max(all_lats) + margin,
+                min(all_lons) - margin,
+                max(all_lons) + margin
+            )
+            self.ax.set_xlim(self._bounds[2], self._bounds[3])
+            self.ax.set_ylim(self._bounds[0], self._bounds[1])
 
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()

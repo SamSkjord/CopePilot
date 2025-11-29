@@ -24,6 +24,7 @@ class Pacenote:
     distance_m: float
     note_type: NoteType
     priority: int  # 1 = most urgent
+    unique_key: str = ""  # For deduplication (based on location, not distance)
 
 
 class PacenoteGenerator:
@@ -43,7 +44,7 @@ class PacenoteGenerator:
 
     # Severity names (index = severity number)
     SEVERITY_NAMES = [
-        "",        # 0 - unused
+        "",  # 0 - unused
         "hairpin",
         "two",
         "three",
@@ -57,9 +58,11 @@ class PacenoteGenerator:
         self,
         distance_threshold_m: float = config.LOOKAHEAD_DISTANCE_M,
         junction_warn_distance: float = config.JUNCTION_WARN_DISTANCE_M,
+        callout_distance_m: float = 100,  # Only call corners within this distance
     ):
         self.distance_threshold = distance_threshold_m
         self.junction_warn_distance = junction_warn_distance
+        self.callout_distance = callout_distance_m
         self._called: Set[str] = set()
 
     def generate(
@@ -102,13 +105,17 @@ class PacenoteGenerator:
 
     def should_call(self, note: Pacenote) -> bool:
         """
-        Check if this note should be called (hasn't been called recently).
+        Check if this note should be called now.
 
-        Uses a key based on distance bucket to prevent repeat calls.
+        Only calls notes within callout_distance_m.
+        Uses deduplication to prevent repeat calls for the same corner.
         """
-        # Create key: round distance to 50m buckets
-        bucket = int(note.distance_m / 50) * 50
-        key = f"{note.text}_{bucket}"
+        # Only call notes within callout distance
+        if note.distance_m > self.callout_distance:
+            return False
+
+        # Use unique_key for deduplication (based on position, not text)
+        key = note.unique_key or note.text
 
         if key in self._called:
             return False
@@ -157,11 +164,15 @@ class PacenoteGenerator:
         text = " ".join(parts)
         priority = self._calculate_priority(corner)
 
+        # Use apex position as unique key (doesn't change as car approaches)
+        unique_key = f"{corner.apex_lat:.5f},{corner.apex_lon:.5f}"
+
         return Pacenote(
             text=text,
             distance_m=corner.entry_distance,
             note_type=NoteType.CORNER,
             priority=priority,
+            unique_key=unique_key,
         )
 
     def _junction_to_note(self, junction: JunctionInfo) -> Optional[Pacenote]:
@@ -178,11 +189,15 @@ class PacenoteGenerator:
 
         text = " ".join(parts)
 
+        # Use junction position as unique key
+        unique_key = f"{junction.node_id}"
+
         return Pacenote(
             text=text,
             distance_m=junction.distance_m,
             note_type=NoteType.JUNCTION,
             priority=1,  # High priority - driver must act
+            unique_key=unique_key,
         )
 
     def _bridge_to_note(self, bridge: BridgeInfo) -> Optional[Pacenote]:
@@ -198,11 +213,15 @@ class PacenoteGenerator:
 
         text = " ".join(parts)
 
+        # Use bridge way ID as unique key
+        unique_key = f"bridge_{bridge.way_id}"
+
         return Pacenote(
             text=text,
             distance_m=bridge.distance_m,
             note_type=NoteType.BRIDGE,
             priority=5,  # Lower priority - informational
+            unique_key=unique_key,
         )
 
     def _get_distance_call(self, distance_m: float) -> Optional[str]:

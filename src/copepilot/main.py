@@ -33,13 +33,19 @@ class CopePilot:
         update_interval: float = config.UPDATE_INTERVAL_S,
         audio_enabled: bool = True,
         visualize: bool = False,
+        simulation_mode: bool = False,
     ):
         self.gps = gps
         self.map_loader = map_loader
         self.corner_detector = CornerDetector()
         self.pacenote_gen = PacenoteGenerator(distance_threshold_m=lookahead_m)
-        self.audio = AudioPlayer() if audio_enabled else None
         self.visualize = visualize
+        self.simulation_mode = simulation_mode
+
+        if audio_enabled:
+            self.audio = AudioPlayer()
+        else:
+            self.audio = None
 
         self.lookahead = lookahead_m
         self.update_interval = update_interval
@@ -57,6 +63,7 @@ class CopePilot:
         self.gps.connect()
         if self.audio:
             self.audio.start()
+            time.sleep(0.1)  # Let audio thread fully initialize
 
         print("GPS ready, starting navigation...")
 
@@ -120,6 +127,11 @@ class CopePilot:
         if not self._last_fetch_pos or not self._network:
             return True
 
+        # In simulation mode, only refetch if we've moved very far
+        # (basically never, since we load a large area initially)
+        if self.simulation_mode:
+            return False
+
         distance = haversine_distance(
             self._last_fetch_pos.lat, self._last_fetch_pos.lon,
             pos.lat, pos.lon,
@@ -130,9 +142,12 @@ class CopePilot:
         """Fetch road data from OSM PBF."""
         print(f"Loading roads near {pos.lat:.4f}, {pos.lon:.4f}...")
 
+        # Use larger radius in simulation mode to avoid refetching
+        radius = 10000 if self.simulation_mode else config.ROAD_FETCH_RADIUS_M
+
         try:
             self._network = self.map_loader.load_around(
-                pos.lat, pos.lon, config.ROAD_FETCH_RADIUS_M
+                pos.lat, pos.lon, radius
             )
             self._projector = PathProjector(self._network)
             self._last_fetch_pos = pos
@@ -268,6 +283,7 @@ def main():
         lookahead_m=args.lookahead,
         audio_enabled=not args.no_audio,
         visualize=args.visualize,
+        simulation_mode=bool(args.simulate or args.vbo),
     )
     app.run()
 
