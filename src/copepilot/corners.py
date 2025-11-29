@@ -49,7 +49,8 @@ class Corner:
 # 3 = tight (30-50m)
 # 4 = medium (50-80m)
 # 5 = fast (80-120m)
-# 6 = flat/slight (> 120m)
+# 6 = flat/slight (120-200m)
+# 7 = kink (> 200m)
 
 RADIUS_SEVERITY = [
     (15, 1),   # < 15m = hairpin
@@ -57,6 +58,7 @@ RADIUS_SEVERITY = [
     (50, 3),   # 30-50m = tight
     (80, 4),   # 50-80m = medium
     (120, 5),  # 80-120m = fast
+    (200, 6),  # 120-200m = six
 ]
 
 
@@ -599,11 +601,11 @@ class CornerDetector:
         return corners
 
     def _classify_severity(self, radius: float) -> int:
-        """Convert minimum radius to rally severity (1-6)."""
+        """Convert minimum radius to rally severity (1-7)."""
         for threshold, severity in RADIUS_SEVERITY:
             if radius < threshold:
                 return severity
-        return 6  # Very gentle curve
+        return 7  # Kink - very gentle curve
 
     def _check_curvature_profile(
         self, curvatures: List[float]

@@ -83,7 +83,8 @@ Based on corner radius:
 | three | 3 | 30-50m |
 | four | 4 | 50-80m |
 | five | 5 | 80-120m |
-| six | 6 | > 120m |
+| six | 6 | 120-200m |
+| kink | 7 | > 200m |
 
 ### Modifiers
 

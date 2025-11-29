@@ -49,6 +49,7 @@ class PacenoteGenerator:
         "four",
         "five",
         "six",
+        "kink",
     ]
 
     def __init__(
@@ -129,8 +130,8 @@ class PacenoteGenerator:
             direction = corner.direction.value
             severity = self.SEVERITY_NAMES[corner.severity]
 
-            # Main call: "left three" or "hairpin right"
-            if corner.severity == 1:
+            # Main call: "left three" or "hairpin right" or "kink left"
+            if corner.severity == 1 or corner.severity == 7:
                 parts.append(f"{severity} {direction}")
             else:
                 parts.append(f"{direction} {severity}")
