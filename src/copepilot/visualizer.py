@@ -121,14 +121,21 @@ class MapVisualizer:
         if corners:
             for corner in corners:
                 color = 'red' if corner.severity <= 2 else 'orange' if corner.severity <= 4 else 'yellow'
+                # Use different marker for chicanes
+                marker_style = 's' if corner.is_chicane else 'o'
                 marker = self.ax.plot(
                     corner.apex_lon, corner.apex_lat,
-                    'o', color=color, markersize=10, alpha=0.8
+                    marker_style, color=color, markersize=10, alpha=0.8
                 )[0]
                 self._corner_markers.append(marker)
 
-                # Add label
-                label = f"{corner.direction.value[0].upper()}{corner.severity}"
+                # Add label - show chicane directions or corner severity
+                if corner.is_chicane and corner.exit_direction:
+                    label = f"{corner.direction.value[0].upper()}{corner.exit_direction.value[0].upper()}"
+                elif corner.severity == 7:
+                    label = f"K{corner.direction.value[0].upper()}"  # Kink
+                else:
+                    label = f"{corner.direction.value[0].upper()}{corner.severity}"
                 text = self.ax.text(
                     corner.apex_lon, corner.apex_lat + 0.0002,
                     label, color='white', fontsize=8, ha='center'

@@ -94,7 +94,7 @@ class CornerDetector:
         # Chicane detection parameters
         merge_chicanes: bool = True,
         max_chicane_gap: float = 30.0,            # Max gap between corners to merge as chicane
-        max_chicane_length: float = 300.0         # Max total length of merged chicane
+        max_chicane_length: float = 100.0         # Max total length of merged chicane
     ):
         self.curvature_peak_threshold = curvature_peak_threshold
         self.min_cut_distance = min_cut_distance
