@@ -58,6 +58,7 @@ class SampleLibrary:
         # "left/three" -> "left_three"
         # "straight/200 m" -> "200"
         # "hints/tightens" -> "tightens"
+        # "miscellaneous/over bridge" -> "over bridge"
         if "/" in name:
             category, phrase = name.split("/", 1)
             if category == "straight":
@@ -66,6 +67,7 @@ class SampleLibrary:
             elif category in ("left", "right"):
                 return f"{category}_{phrase}"
             else:
+                # hints, miscellaneous, etc. - use phrase as-is
                 return phrase
         return name
 
@@ -250,6 +252,12 @@ class AudioPlayer:
             elif parts[i] == "caution":
                 sample_keys.append("caution")
                 i += 1
+                continue
+
+            # Check for "over bridge"
+            if parts[i] == "over" and i + 1 < len(parts) and parts[i + 1] == "bridge":
+                sample_keys.append("over bridge")
+                i += 2
                 continue
 
             # Skip unknown words

@@ -5,7 +5,7 @@ from enum import Enum
 from typing import List, Optional, Set
 
 from .corners import Corner, Direction
-from .path_projector import JunctionInfo
+from .path_projector import JunctionInfo, BridgeInfo
 from . import config
 
 
@@ -13,6 +13,7 @@ class NoteType(Enum):
     CORNER = "corner"
     JUNCTION = "junction"
     CAUTION = "caution"
+    BRIDGE = "bridge"
 
 
 @dataclass
@@ -65,8 +66,9 @@ class PacenoteGenerator:
         self,
         corners: List[Corner],
         junctions: List[JunctionInfo],
+        bridges: Optional[List[BridgeInfo]] = None,
     ) -> List[Pacenote]:
-        """Generate pacenotes for upcoming corners and junctions."""
+        """Generate pacenotes for upcoming corners, junctions, and bridges."""
         notes = []
 
         # Process corners
@@ -82,6 +84,14 @@ class PacenoteGenerator:
                 # Warn about junctions where driver must make a choice
                 if junction.straight_on_bearing is None:
                     note = self._junction_to_note(junction)
+                    if note:
+                        notes.append(note)
+
+        # Process bridges
+        if bridges:
+            for bridge in bridges:
+                if bridge.distance_m <= self.distance_threshold:
+                    note = self._bridge_to_note(bridge)
                     if note:
                         notes.append(note)
 
@@ -173,6 +183,26 @@ class PacenoteGenerator:
             distance_m=junction.distance_m,
             note_type=NoteType.JUNCTION,
             priority=1,  # High priority - driver must act
+        )
+
+    def _bridge_to_note(self, bridge: BridgeInfo) -> Optional[Pacenote]:
+        """Convert a bridge to a pacenote."""
+        parts = []
+
+        # Distance
+        distance_call = self._get_distance_call(bridge.distance_m)
+        if distance_call:
+            parts.append(distance_call)
+
+        parts.append("over bridge")
+
+        text = " ".join(parts)
+
+        return Pacenote(
+            text=text,
+            distance_m=bridge.distance_m,
+            note_type=NoteType.BRIDGE,
+            priority=5,  # Lower priority - informational
         )
 
     def _get_distance_call(self, distance_m: float) -> Optional[str]:

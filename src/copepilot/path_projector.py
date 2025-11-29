@@ -30,6 +30,7 @@ class ProjectedPath:
     """The projected path ahead with detected features."""
     points: List[PathPoint]
     junctions: List["JunctionInfo"]
+    bridges: List["BridgeInfo"]
     total_distance: float
 
 
@@ -42,6 +43,15 @@ class JunctionInfo:
     is_t_junction: bool
     exit_bearings: List[float]  # Bearings of roads leaving junction
     straight_on_bearing: Optional[float]  # Which way is "straight on"
+
+
+@dataclass
+class BridgeInfo:
+    """Information about an upcoming bridge."""
+    lat: float
+    lon: float
+    distance_m: float
+    way_id: int
 
 
 class PathProjector:
@@ -147,10 +157,12 @@ class PathProjector:
         way_id, node_idx, forward = current
         points: List[PathPoint] = []
         junctions: List[JunctionInfo] = []
+        bridges: List[BridgeInfo] = []
         total_distance = 0.0
 
         # Start from current position
         visited_ways = {way_id}
+        visited_bridges = set()  # Track bridge ways already recorded
 
         while total_distance < max_distance:
             way = self.network.ways.get(way_id)
@@ -160,6 +172,18 @@ class PathProjector:
             geometry = self.network.get_way_geometry(way_id)
             if len(geometry) < 2:
                 break
+
+            # Check for bridge at start of this way
+            if way.bridge and way_id not in visited_bridges:
+                visited_bridges.add(way_id)
+                # Use first point of this way segment as bridge location
+                bridge_pt = geometry[node_idx] if node_idx < len(geometry) else geometry[0]
+                bridges.append(BridgeInfo(
+                    lat=bridge_pt[0],
+                    lon=bridge_pt[1],
+                    distance_m=total_distance,
+                    way_id=way_id,
+                ))
 
             # Add points along this way
             if forward:
@@ -265,6 +289,7 @@ class PathProjector:
         return ProjectedPath(
             points=points,
             junctions=junctions,
+            bridges=bridges,
             total_distance=total_distance,
         )
 

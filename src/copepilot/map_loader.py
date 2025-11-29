@@ -31,6 +31,7 @@ class Way:
     highway_type: str = ""
     oneway: bool = False
     speed_limit: int = 0  # km/h, 0 if unknown
+    bridge: bool = False
 
 
 @dataclass
@@ -111,6 +112,7 @@ class PBFRoadHandler(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
         name = tags.get("name", "")
         oneway = tags.get("oneway", "no") in ("yes", "true", "1")
         speed_limit = self._parse_speed_limit(tags.get("maxspeed", ""))
+        bridge = tags.get("bridge", "no") not in ("no", "")
 
         self.ways[w.id] = Way(
             id=w.id,
@@ -119,6 +121,7 @@ class PBFRoadHandler(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
             highway_type=highway,
             oneway=oneway,
             speed_limit=speed_limit,
+            bridge=bridge,
         )
         self.needed_nodes.update(node_refs)
 
