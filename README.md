@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="CopePilot">
+</p>
+
 # CopePilot
 
 Rally pacenote style driving assistance for your daily commute. Uses GPS and OpenStreetMap data to call out upcoming corners like a rally co-driver.
