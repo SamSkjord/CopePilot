@@ -14,7 +14,7 @@ Rally pacenote style driving assistance for your daily commute. Uses GPS and Ope
 
 ## Features
 
-- Real co-driver voice using Nicky Grist audio samples
+- Real co-driver voice using Janne Laahanen audio samples
 - Corner detection with severity ratings (1-6)
 - Bridge callouts ("over bridge")
 - T-junction warnings
@@ -69,9 +69,7 @@ pip install -e .
 
 ## Audio Samples
 
-For authentic rally co-driver audio, place Nicky Grist sample files in `assets/NickyGrist/`:
-- `NickyGrist.mp3` - Audio file containing all samples
-- `NickyGrist.txt` - Timing markers for each sample
+Janne Laahanen co-driver samples are included in `assets/codriver_Janne Laahanen/`. These are WAV files from CrewChiefV4, released under MIT licence.
 
 The system will fall back to TTS with radio effect if samples aren't available.
 
@@ -126,7 +124,7 @@ Based on corner radius:
 | four | 4 | 50-80m |
 | five | 5 | 80-120m |
 | six | 6 | 120-200m |
-| kink | 7 | > 200m |
+| flat | 7 | > 200m |
 
 ### Modifiers
 
@@ -137,7 +135,7 @@ Based on corner radius:
 ### Additional Callouts
 
 - **over bridge** - road crosses a bridge
-- **caution** - approaching a T-junction
+- **junction** - approaching a T-junction (road ends)
 - **chicane** - left-right or right-left sequence (e.g., "left four right three")
 
 ## Example Output
@@ -204,6 +202,12 @@ src/copepilot/
 ├── visualizer.py    # Matplotlib visualization
 └── geometry.py      # Geometric utilities
 ```
+
+## Credits
+
+**Audio Samples**: Janne Laahanen and RaceRoom (MIT Licence)
+- Co-driver voice samples from [CrewChiefV4](https://gitlab.com/mr_belern/CrewChiefV4)
+- Original recordings by Janne Laahanen for RaceRoom Racing Experience
 
 ## License
 

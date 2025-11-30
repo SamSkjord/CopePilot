@@ -37,7 +37,12 @@ class CopePilot:
     ):
         self.gps = gps
         self.map_loader = map_loader
-        self.corner_detector = CornerDetector()
+        # Tune corner detection for better square/chicane detection
+        self.corner_detector = CornerDetector(
+            merge_same_direction=False,  # Don't merge consecutive same-direction turns
+            min_cut_distance=10.0,        # More precise cuts (was 15)
+            max_chicane_gap=15.0,         # Tighter chicane merging (was 30)
+        )
         self.pacenote_gen = PacenoteGenerator(distance_threshold_m=lookahead_m)
         self.visualize = visualize
         self.simulation_mode = simulation_mode
@@ -110,10 +115,11 @@ class CopePilot:
 
         # Speak/print notes that haven't been called yet
         for note in notes:
-            if self.pacenote_gen.should_call(note):
+            should_call, filtered_note = self.pacenote_gen.should_call(note)
+            if should_call and filtered_note:
                 if self.audio:
-                    self.audio.say(note.text, note.priority)
-                print(f"  [{note.distance_m:.0f}m] {note.text}")
+                    self.audio.say(filtered_note.text, filtered_note.priority)
+                print(f"  >>> [{filtered_note.distance_m:.0f}m] {filtered_note.text}")
 
         # Update visualization
         if self._visualizer:

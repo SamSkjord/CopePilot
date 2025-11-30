@@ -1,0 +1,149 @@
+#
+# This file allows the fine tuning of co-driver behavior.  For each corner calling style, additional mappings of
+# pacenote type to sound folder is allowed.
+#
+# Mappable (and chainable) pacenote types are listed CrewChiefV4\CrewChiefV4\Events\CoDriver.cs in the PacenoteType enumeration.
+#
+# Example:
+#  "NUMBER_FIRST": {
+#     "terminology": {
+#        "corner_1_left": "corner_hairpin_left",
+#
+# Above mapping means: For “Number First” style, “corner_1_left” ID coming from the game, play folder "corner_hairpin_left".
+# Note that left side of the mapping has to be one of the PacenoteType enumeraton’s values, but right side can be anything.
+#
+# Additionally, this file allows specifying which PacenoteType IDs can be chained.  Chained ID means two things:
+#
+#   • If chained ID (for example Y) is close to the previous note (for example, X) (exact distance is configurable in the CC preferences),
+#     it will be played in a chained note style, like “X into Y”.
+#
+#   • Also, only chained IDs are participating in a distance call calculations.  If the call following a distance call is not part of 
+#     the chainedTypes list, it is ignored.
+#
+# This file can be overridden my placing your own “terminologies.json” file into [Documents]\CrewChiefV4\ folder.
+# When editing this file, make sure to review the console output for “Corrupted terminology” messages, as CC tries to
+# ensure that file is authored correctly.
+#
+{
+  "termininologies": {
+    "NUMBER_FIRST": {
+      "terminology": {
+        "corner_1_left": "corner_hairpin_left",
+        "corner_1_right": "corner_hairpin_right",
+        "corner_2_left": "corner_1_left",
+        "corner_2_right": "corner_1_right",
+        "corner_square_left": "corner_2_left",
+        "corner_square_right": "corner_2_right"
+      }
+    },
+    "DIRECTION_FIRST": {
+      "terminology": {
+        "corner_1_left": "corner_hairpin_left",
+        "corner_1_right": "corner_hairpin_right",
+        "corner_2_left": "corner_1_left",
+        "corner_2_right": "corner_1_right",
+        "corner_square_left": "corner_2_left",
+        "corner_square_right": "corner_2_right"
+      }
+    },
+    "DESCRIPTIVE": {
+      "terminology": {}
+    },
+    "NUMBER_FIRST_REVERSED": {
+      "terminology": {
+        "corner_1_left": "corner_hairpin_left",
+        "corner_1_right": "corner_hairpin_right",
+        "corner_2_left": "corner_1_left",
+        "corner_2_right": "corner_1_right",
+        "corner_square_left": "corner_2_left",
+        "corner_square_right": "corner_2_right"
+      }
+    },
+    "DIRECTION_FIRST_REVERSED": {
+      "terminology": {
+        "corner_1_left": "corner_hairpin_left",
+        "corner_1_right": "corner_hairpin_right",
+        "corner_2_left": "corner_1_left",
+        "corner_2_right": "corner_1_right",
+        "corner_square_left": "corner_2_left",
+        "corner_square_right": "corner_2_right"
+      }
+    }
+  },
+  "chainedNotes": [
+    "corner_1_left",
+    "corner_square_left",
+    "corner_3_left",
+    "corner_4_left",
+    "corner_5_left",
+    "corner_6_left",
+    "corner_6_right",
+    "corner_5_right",
+    "corner_4_right",
+    "corner_3_right",
+    "corner_square_right",
+    "corner_1_right",
+    "corner_flat_right",
+    "corner_flat_left",
+    "corner_2_left",
+    "corner_2_right",
+    "corner_left",
+    "corner_right",
+    "corner_right_into",
+    "corner_left_into",
+    "corner_right_left",
+    "corner_left_right",
+    "corner_right_around",
+    "corner_left_around",
+    "detail_care",
+    "detail_caution",
+    "detail_double_caution",
+    "detail_triple_caution",
+    "detail_caution_water",
+    "detail_hole",
+    "detail_ruts",
+    "detail_deepruts",
+    "detail_post",
+    "detail_mast",
+    "detail_wall",
+    "detail_fence",
+    "detail_house",
+    "detail_island",
+    "detail_chicane",
+    "detail_tunnel",
+    "detail_rails",
+    "detail_path",
+    "detail_road",
+    "detail_walk",
+    "detail_roundabout",
+    "detail_wooden_fence",
+    "detail_twisty",
+    "detail_go_straight",
+    "detail_jump",
+    "detail_crest",
+    "detail_bridge",
+    "detail_ford",
+    "detail_bump",
+    "detail_water",
+    "detail_puddle",
+    "detail_tree",
+    "detail_stump",
+    "detail_stone",
+    "detail_rock",
+    "detail_sign",
+    "detail_bush",
+    "detail_barrels",
+    "detail_netting",
+    "detail_tyres",
+    "detail_spectators",
+    "detail_marshalls",
+    "detail_tape",
+    "detail_junction",
+    "detail_curve",
+    "detail_turn",
+    "detail_left_entry_chicane",
+    "detail_right_entry_chicane",
+    "detail_fork_left",
+    "detail_fork_right"
+  ]
+}

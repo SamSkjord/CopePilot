@@ -11,7 +11,7 @@ from .geometry import (
     closest_point_on_segment,
     cumulative_distances,
 )
-from .map_loader import RoadNetwork, Junction
+from .map_loader import RoadNetwork, Junction, Way
 from . import config
 
 
@@ -237,7 +237,8 @@ class PathProjector:
 
                 # Find straight-on bearing
                 straight_bearing = self._find_straight_on(
-                    current_bearing, exit_bearings
+                    current_bearing, exit_bearings,
+                    current_way=way, junction=junction
                 )
 
                 junctions.append(JunctionInfo(
@@ -337,11 +338,36 @@ class PathProjector:
         self,
         arrival_bearing: float,
         exit_bearings: List[float],
+        current_way: Optional[Way] = None,
+        junction: Optional[Junction] = None,
     ) -> Optional[float]:
-        """Find which exit is 'straight on' (closest to current bearing)."""
+        """
+        Find which exit is 'straight on' (closest to current bearing).
+
+        If current_way is provided, checks if the road actually continues
+        through the junction (same road) vs hitting a different road (T-junction).
+        """
         if not exit_bearings:
             return None
 
+        # If we have road info, check if current road continues through junction
+        if current_way and junction:
+            # Check if current road continues (node is in middle of way, not at end)
+            if junction.node_id in current_way.nodes:
+                idx = current_way.nodes.index(junction.node_id)
+                road_continues = 0 < idx < len(current_way.nodes) - 1
+
+                if not road_continues:
+                    # Current road ends here - check if any exit is the same road name
+                    same_road_exit = self._find_same_road_exit(
+                        current_way, junction, arrival_bearing
+                    )
+                    if same_road_exit is not None:
+                        return same_road_exit
+                    # No same-road continuation - this is a true T-junction
+                    return None
+
+        # Default: find best aligned exit
         best_bearing = None
         best_diff = float("inf")
 
@@ -352,6 +378,62 @@ class PathProjector:
                 best_bearing = b
 
         return best_bearing
+
+    def _find_same_road_exit(
+        self,
+        current_way: Way,
+        junction: Junction,
+        arrival_bearing: float,
+    ) -> Optional[float]:
+        """
+        Find exit bearing that continues the same road (by name or type).
+
+        Returns the bearing if found, None if no same-road continuation exists.
+        """
+        node = self.network.nodes[junction.node_id]
+
+        for way_id in junction.connected_ways:
+            if way_id == current_way.id:
+                continue
+
+            other_way = self.network.ways.get(way_id)
+            if not other_way:
+                continue
+
+            # Check if this is the same road (same name, or both unnamed with same type)
+            same_road = False
+            if current_way.name and other_way.name:
+                same_road = current_way.name == other_way.name
+            elif not current_way.name and not other_way.name:
+                # Both unnamed - only continue if same road type
+                same_road = current_way.highway_type == other_way.highway_type
+
+            if not same_road:
+                continue
+
+            # Get bearing of this exit
+            try:
+                idx = other_way.nodes.index(junction.node_id)
+            except ValueError:
+                continue
+
+            # Check forward direction
+            if idx < len(other_way.nodes) - 1:
+                next_n = self.network.nodes.get(other_way.nodes[idx + 1])
+                if next_n:
+                    b = bearing(node.lat, node.lon, next_n.lat, next_n.lon)
+                    if abs(angle_difference(arrival_bearing, b)) < self.heading_tolerance:
+                        return b
+
+            # Check backward direction
+            if idx > 0:
+                prev = self.network.nodes.get(other_way.nodes[idx - 1])
+                if prev:
+                    b = bearing(node.lat, node.lon, prev.lat, prev.lon)
+                    if abs(angle_difference(arrival_bearing, b)) < self.heading_tolerance:
+                        return b
+
+        return None
 
     def _find_way_with_bearing(
         self,

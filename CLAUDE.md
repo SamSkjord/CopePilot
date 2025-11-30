@@ -50,7 +50,7 @@ GPS/Simulator → MapLoader → PathProjector → CornerDetector → PacenoteGen
 
 - `assets/gloucestershire-251127.osm.pbf` - OSM map data
 - `assets/gloucestershire-251127.osm.roads.pkl` - Cached road network (auto-generated)
-- `assets/NickyGrist/` - Audio samples (NickyGrist.mp3 + NickyGrist.txt)
+- `assets/codriver_Janne Laahanen/` - Audio samples (MIT licence, see Credits)
 - `src/copepilot/config.py` - Configuration constants
 
 ## Testing
@@ -77,7 +77,7 @@ from pathlib import Path
 from src.copepilot.audio import AudioPlayer
 import time
 
-player = AudioPlayer(Path('assets/NickyGrist'))
+player = AudioPlayer()
 player.start()
 player.say('left four tightens')
 time.sleep(2)
@@ -96,6 +96,11 @@ player.stop()
 ### First audio callout cut off
 - Added sox warmup and 0.1s delay after audio thread starts
 
+### Overlapping callouts missed
+- Pacenote generator merges notes within 50m of each other with "into"
+- e.g., bridge at 80m + hairpin at 95m → "over bridge into hairpin left"
+- Audio queue also drains all pending items to catch late arrivals
+
 ### PBF loading slow
 - Road network is now cached to pickle file after first extraction
 - Cache rebuilds automatically if PBF is newer
@@ -104,14 +109,17 @@ player.stop()
 
 | Term | Meaning |
 |------|---------|
-| hairpin | Very tight corner (severity 1) |
+| hairpin | Very tight U-turn (~180°, severity 1) |
+| square | Right-angle turn (~90°, tight radius) |
 | two/three/four/five/six | Corner severity (lower = tighter) |
-| kink | Very slight bend (severity 7) |
+| flat | Very slight bend (severity 7) |
 | tightens | Corner gets tighter through |
 | opens | Corner opens up through |
 | long | Corner spans > 50m |
 | over bridge | Road crosses a bridge |
-| caution | T-junction ahead |
+| junction | T-junction ahead (road ends) |
+| chicane left/right | S-bend starting left or right |
+| into | Links two corners called in quick succession |
 
 ## Dependencies
 
@@ -119,3 +127,9 @@ player.stop()
 - `sox` - Audio effects and sample extraction
 - `matplotlib` - Visualization (optional)
 - `pyserial` - Real GPS reading (optional)
+
+## Credits
+
+**Audio Samples**: Janne Laahanen and RaceRoom (MIT Licence)
+- Co-driver voice samples from [CrewChiefV4](https://gitlab.com/mr_belern/CrewChiefV4)
+- Original recordings by Janne Laahanen for RaceRoom Racing Experience
