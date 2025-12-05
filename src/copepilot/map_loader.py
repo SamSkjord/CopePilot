@@ -223,12 +223,18 @@ class PBFRoadHandler(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
 class MapLoader:
     """Load and query road network from pickle cache or OSM PBF file.
 
-    Accepts either a directory or a specific file path:
-    - Directory: looks for .roads.pkl first, falls back to .osm.pbf
-    - File path: uses that specific file (pkl or pbf)
+    Supports three modes:
+    1. Single file: specific .roads.pkl or .osm.pbf
+    2. Directory with single map: finds .roads.pkl or .osm.pbf
+    3. Tile mode: directory with tile_*.roads.pkl files (loads tiles on demand)
 
-    To update maps: either replace the .pkl directly, or delete .pkl and add .pbf
+    Tile mode enables large regions by loading only nearby tiles.
+    To update maps: replace .pkl files, or delete and add new .pbf
     """
+
+    # Tile settings
+    TILE_SIZE = 0.5  # degrees, must match split_tiles.py
+    MAX_LOADED_TILES = 4  # Maximum tiles to keep in memory
 
     def __init__(self, map_path: Path):
         self.map_path = Path(map_path)
@@ -239,13 +245,27 @@ class MapLoader:
         self._query_cache_center: Optional[Tuple[float, float]] = None
         self._query_cache_radius: float = 0
 
+        # Tile mode
+        self._tile_mode = False
+        self._tile_dir: Optional[Path] = None
+        self._tile_cache: Dict[str, RoadNetwork] = {}  # tile_name -> network
+        self._tile_access_order: List[str] = []  # LRU tracking
+
         # Find map files
         self._find_map_files()
 
     def _find_map_files(self) -> None:
-        """Find pickle cache and/or PBF file."""
+        """Find pickle cache and/or PBF file, or detect tile mode."""
         if self.map_path.is_dir():
-            # Look for files in directory
+            # Check for tile files first
+            tile_pkls = list(self.map_path.glob("tile_*.roads.pkl"))
+            if tile_pkls:
+                self._tile_mode = True
+                self._tile_dir = self.map_path
+                print(f"  Tile mode: found {len(tile_pkls)} tiles")
+                return
+
+            # Look for single map files
             pkls = list(self.map_path.glob("*.roads.pkl"))
             pbfs = list(self.map_path.glob("*.osm.pbf"))
 
@@ -265,6 +285,141 @@ class MapLoader:
                 pkl_path = self.map_path.with_suffix(".roads.pkl")
                 if pkl_path.exists():
                     self._pkl_file = pkl_path
+
+    def _get_tile_name(self, lat: float, lon: float) -> str:
+        """Get tile name for a position."""
+        tile_lat = (lat // self.TILE_SIZE) * self.TILE_SIZE
+        tile_lon = (lon // self.TILE_SIZE) * self.TILE_SIZE
+        return f"tile_{tile_lat:.1f}_{tile_lon:.1f}"
+
+    def _get_adjacent_tiles(self, lat: float, lon: float) -> List[str]:
+        """Get tile names for position and adjacent tiles."""
+        tiles = []
+        for dlat in [-self.TILE_SIZE, 0, self.TILE_SIZE]:
+            for dlon in [-self.TILE_SIZE, 0, self.TILE_SIZE]:
+                tiles.append(self._get_tile_name(lat + dlat, lon + dlon))
+        return tiles
+
+    def _load_tile(self, tile_name: str) -> Optional[RoadNetwork]:
+        """Load a tile from cache or disk."""
+        # Check memory cache
+        if tile_name in self._tile_cache:
+            # Update LRU order
+            if tile_name in self._tile_access_order:
+                self._tile_access_order.remove(tile_name)
+            self._tile_access_order.append(tile_name)
+            return self._tile_cache[tile_name]
+
+        # Try to load from disk
+        pkl_path = self._tile_dir / f"{tile_name}.roads.pkl"
+        if not pkl_path.exists():
+            return None
+
+        try:
+            with open(pkl_path, "rb") as f:
+                network = pickle.load(f)
+
+            # Add to cache
+            self._tile_cache[tile_name] = network
+            self._tile_access_order.append(tile_name)
+
+            # Evict old tiles if over limit
+            while len(self._tile_cache) > self.MAX_LOADED_TILES:
+                old_tile = self._tile_access_order.pop(0)
+                del self._tile_cache[old_tile]
+
+            return network
+        except Exception as e:
+            print(f"  Error loading tile {tile_name}: {e}")
+            return None
+
+    def _merge_networks(self, networks: List[RoadNetwork]) -> RoadNetwork:
+        """Merge multiple tile networks into one."""
+        merged = RoadNetwork()
+        for network in networks:
+            merged.nodes.update(network.nodes)
+            merged.ways.update(network.ways)
+            merged.junctions.update(network.junctions)
+            merged.railway_crossings.update(network.railway_crossings)
+            merged.barriers.update(network.barriers)
+            # Merge node_to_ways
+            for nid, way_ids in network.node_to_ways.items():
+                if nid not in merged.node_to_ways:
+                    merged.node_to_ways[nid] = []
+                for wid in way_ids:
+                    if wid not in merged.node_to_ways[nid]:
+                        merged.node_to_ways[nid].append(wid)
+        return merged
+
+    def _load_around_tiles(
+        self, lat: float, lon: float, radius_m: float
+    ) -> RoadNetwork:
+        """Load road network from tiles around a point."""
+        # Get current and adjacent tile names
+        current_tile = self._get_tile_name(lat, lon)
+        needed_tiles = self._get_adjacent_tiles(lat, lon)
+
+        # Load needed tiles
+        networks = []
+        for tile_name in needed_tiles:
+            network = self._load_tile(tile_name)
+            if network:
+                networks.append(network)
+
+        if not networks:
+            print(f"  Warning: No tiles found for {lat:.2f}, {lon:.2f}")
+            print(f"  Expected tile: {current_tile}")
+            return RoadNetwork()
+
+        # Merge tiles
+        full_network = self._merge_networks(networks)
+
+        # Filter to radius (same as non-tile mode)
+        lat_delta = radius_m / 111000
+        lon_delta = radius_m / (111000 * math.cos(math.radians(lat)))
+        min_lat, max_lat = lat - lat_delta, lat + lat_delta
+        min_lon, max_lon = lon - lon_delta, lon + lon_delta
+
+        network = RoadNetwork()
+
+        # Find nodes in bounds
+        for nid, node in full_network.nodes.items():
+            if min_lat <= node.lat <= max_lat and min_lon <= node.lon <= max_lon:
+                network.nodes[nid] = node
+
+        # Find ways with at least one node in bounds
+        for wid, way in full_network.ways.items():
+            if any(nid in network.nodes for nid in way.nodes):
+                network.ways[wid] = way
+                for nid in way.nodes:
+                    if nid not in network.nodes and nid in full_network.nodes:
+                        network.nodes[nid] = full_network.nodes[nid]
+
+        # Build node-to-way index
+        for wid, way in network.ways.items():
+            for nid in way.nodes:
+                if nid not in network.node_to_ways:
+                    network.node_to_ways[nid] = []
+                network.node_to_ways[nid].append(wid)
+
+        # Copy junctions, railway crossings, barriers
+        for nid in network.node_to_ways:
+            if len(network.node_to_ways[nid]) >= 2 and nid in full_network.junctions:
+                network.junctions[nid] = full_network.junctions[nid]
+            if nid in full_network.railway_crossings:
+                network.railway_crossings[nid] = full_network.railway_crossings[nid]
+            if nid in full_network.barriers:
+                network.barriers[nid] = full_network.barriers[nid]
+
+        # Cache result
+        self._query_cache = network
+        self._query_cache_center = (lat, lon)
+        self._query_cache_radius = radius_m
+
+        loaded_tiles = [t for t in needed_tiles if t in self._tile_cache]
+        print(f"Loaded {len(network.ways)} roads from {len(loaded_tiles)} tiles")
+
+        return network
 
     def _get_full_network(self) -> RoadNetwork:
         """Get the full road network, loading from cache or PBF."""
@@ -367,6 +522,7 @@ class MapLoader:
         Load road network around a point.
 
         Uses caching - if we already have data covering this area, returns cache.
+        In tile mode, loads tiles on demand.
         """
         # Check if query cache covers this request
         if self._query_cache and self._query_cache_center:
@@ -376,6 +532,10 @@ class MapLoader:
             )
             if dist < self._query_cache_radius / 2:
                 return self._query_cache
+
+        # Tile mode: load nearby tiles
+        if self._tile_mode:
+            return self._load_around_tiles(lat, lon, radius_m)
 
         # Get full network (from cache or PBF)
         full_network = self._get_full_network()
