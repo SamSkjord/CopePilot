@@ -221,50 +221,90 @@ class PBFRoadHandler(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
 
 
 class MapLoader:
-    """Load and query road network from OSM PBF file."""
+    """Load and query road network from pickle cache or OSM PBF file.
 
-    def __init__(self, pbf_path: Path):
-        if not OSMIUM_AVAILABLE:
-            raise ImportError(
-                "osmium not available. Install with: pip install osmium"
-            )
-        self.pbf_path = Path(pbf_path)
-        self._cache_file = self.pbf_path.with_suffix(".roads.pkl")
+    Accepts either a directory or a specific file path:
+    - Directory: looks for .roads.pkl first, falls back to .osm.pbf
+    - File path: uses that specific file (pkl or pbf)
+
+    To update maps: either replace the .pkl directly, or delete .pkl and add .pbf
+    """
+
+    def __init__(self, map_path: Path):
+        self.map_path = Path(map_path)
+        self._pkl_file: Optional[Path] = None
+        self._pbf_file: Optional[Path] = None
         self._full_network: Optional[RoadNetwork] = None
         self._query_cache: Optional[RoadNetwork] = None
         self._query_cache_center: Optional[Tuple[float, float]] = None
         self._query_cache_radius: float = 0
+
+        # Find map files
+        self._find_map_files()
+
+    def _find_map_files(self) -> None:
+        """Find pickle cache and/or PBF file."""
+        if self.map_path.is_dir():
+            # Look for files in directory
+            pkls = list(self.map_path.glob("*.roads.pkl"))
+            pbfs = list(self.map_path.glob("*.osm.pbf"))
+
+            if pkls:
+                # Use most recent pickle
+                self._pkl_file = max(pkls, key=lambda p: p.stat().st_mtime)
+            if pbfs:
+                # Use most recent PBF
+                self._pbf_file = max(pbfs, key=lambda p: p.stat().st_mtime)
+        else:
+            # Specific file provided
+            if self.map_path.suffix == ".pkl" or str(self.map_path).endswith(".roads.pkl"):
+                self._pkl_file = self.map_path
+            elif self.map_path.suffix == ".pbf":
+                self._pbf_file = self.map_path
+                # Check for matching pickle
+                pkl_path = self.map_path.with_suffix(".roads.pkl")
+                if pkl_path.exists():
+                    self._pkl_file = pkl_path
 
     def _get_full_network(self) -> RoadNetwork:
         """Get the full road network, loading from cache or PBF."""
         if self._full_network:
             return self._full_network
 
-        # Try loading from cache file
-        if self._cache_file.exists():
-            pbf_mtime = os.path.getmtime(self.pbf_path)
-            cache_mtime = os.path.getmtime(self._cache_file)
-            if cache_mtime > pbf_mtime:
-                try:
-                    print(f"  Loading cached roads from {self._cache_file.name}...")
-                    with open(self._cache_file, "rb") as f:
-                        self._full_network = pickle.load(f)
-                    print(f"  Loaded {len(self._full_network.ways)} roads from cache")
-                    return self._full_network
-                except Exception as e:
-                    print(f"  Cache load failed: {e}, rebuilding...")
+        # Try loading from pickle cache first
+        if self._pkl_file and self._pkl_file.exists():
+            try:
+                print(f"  Loading cached roads from {self._pkl_file.name}...")
+                with open(self._pkl_file, "rb") as f:
+                    self._full_network = pickle.load(f)
+                print(f"  Loaded {len(self._full_network.ways)} roads from cache")
+                return self._full_network
+            except Exception as e:
+                print(f"  Cache load failed: {e}")
 
-        # Extract all roads from PBF
-        print(f"  Extracting roads from PBF (first time only)...")
+        # Fall back to extracting from PBF
+        if not self._pbf_file or not self._pbf_file.exists():
+            raise FileNotFoundError(
+                f"No map data found. Provide a .roads.pkl or .osm.pbf file."
+            )
+
+        if not OSMIUM_AVAILABLE:
+            raise ImportError(
+                "osmium not available. Install with: pip install osmium"
+            )
+
+        print(f"  Extracting roads from {self._pbf_file.name}...")
         self._full_network = self._extract_all_roads()
 
-        # Save to cache
+        # Save to cache (alongside PBF)
+        cache_file = self._pbf_file.with_suffix(".roads.pkl")
         try:
-            print(f"  Saving cache to {self._cache_file.name}...")
-            with open(self._cache_file, "wb") as f:
+            print(f"  Saving cache to {cache_file.name}...")
+            with open(cache_file, "wb") as f:
                 pickle.dump(self._full_network, f)
-            size_mb = os.path.getsize(self._cache_file) / 1024 / 1024
+            size_mb = os.path.getsize(cache_file) / 1024 / 1024
             print(f"  Cache saved ({size_mb:.1f} MB)")
+            self._pkl_file = cache_file
         except Exception as e:
             print(f"  Warning: Could not save cache: {e}")
 
@@ -275,7 +315,7 @@ class MapLoader:
         # Use very large bounds to get everything
         bounds = (-90, -180, 90, 180)
         handler = PBFRoadHandler(bounds)
-        handler.apply_file(str(self.pbf_path), locations=True)
+        handler.apply_file(str(self._pbf_file), locations=True)
         print(f"  Found {len(handler.ways)} roads, {len(handler.nodes)} nodes")
 
         # Build network
