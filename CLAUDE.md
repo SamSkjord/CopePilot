@@ -4,7 +4,7 @@ This file provides guidance for Claude Code when working on CopePilot.
 
 ## Project Overview
 
-CopePilot is a rally pacenote system that calls out upcoming corners, bridges, and junctions while driving. It uses GPS position and OpenStreetMap data to generate audio callouts like a rally co-driver.
+CopePilot is a rally pacenote system that calls out upcoming corners, bridges, junctions, and road hazards while driving. It uses GPS position and OpenStreetMap data to generate audio callouts like a rally co-driver.
 
 ## Quick Start
 
@@ -41,9 +41,9 @@ GPS/Simulator → MapLoader → PathProjector → CornerDetector → PacenoteGen
 
 1. `GPSSimulator.read_position()` returns current lat/lon/heading
 2. `MapLoader.load_around()` loads roads from cached pickle (or parses PBF first time)
-3. `PathProjector.project_path()` traces path ahead, returns points + junctions + bridges
+3. `PathProjector.project_path()` traces path ahead, returns points + junctions + road features
 4. `CornerDetector.detect_corners()` finds corners in path geometry
-5. `PacenoteGenerator.generate()` creates callouts with distances
+5. `PacenoteGenerator.generate()` creates callouts with distances and multi-callout support
 6. `AudioPlayer.say()` queues audio for playback
 
 ## Important Files
@@ -117,9 +117,26 @@ player.stop()
 | opens | Corner opens up through |
 | long | Corner spans > 50m |
 | over bridge | Road crosses a bridge |
+| tunnel | Road enters a tunnel |
+| over rails | Railway level crossing ahead |
+| water | Ford (water crossing) ahead |
+| bump/bumps | Speed bump or traffic calming |
+| onto gravel/tarmac | Surface change ahead |
 | junction | T-junction ahead (road ends) |
 | chicane left/right | S-bend starting left or right |
-| into | Links two corners called in quick succession |
+| into | Links two features called in quick succession |
+
+## Multi-Callout System
+
+Features are called at multiple distances to give the driver advance warning:
+
+| Feature Type | Callout Distances | Notes |
+|--------------|-------------------|-------|
+| Corners | 1000m, 500m, 100m | Only if nothing else between driver and corner |
+| Hazards (rails, water, bumps, tunnels, surface) | 500m, 300m, 100m | Always called at each bracket |
+| Bridges, Junctions | 100m only | Single callout |
+
+Adjacent features within 50m are merged with "into" (e.g., "over rails into left four").
 
 ## Dependencies
 

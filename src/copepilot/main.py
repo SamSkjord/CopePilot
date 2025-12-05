@@ -111,7 +111,16 @@ class CopePilot:
         corners = self.corner_detector.detect_corners(points)
 
         # Generate pacenotes
-        notes = self.pacenote_gen.generate(corners, path.junctions, path.bridges)
+        notes = self.pacenote_gen.generate(
+            corners,
+            path.junctions,
+            bridges=path.bridges,
+            tunnels=path.tunnels,
+            railway_crossings=path.railway_crossings,
+            fords=path.fords,
+            speed_bumps=path.speed_bumps,
+            surface_changes=path.surface_changes,
+        )
 
         # Speak/print notes that haven't been called yet
         for note in notes:

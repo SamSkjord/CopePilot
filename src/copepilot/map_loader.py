@@ -34,6 +34,10 @@ class Way:
     oneway: bool = False
     speed_limit: int = 0  # km/h, 0 if unknown
     bridge: bool = False
+    tunnel: bool = False
+    surface: str = ""  # asphalt, gravel, concrete, etc.
+    ford: bool = False
+    traffic_calming: str = ""  # bump, hump, table, etc.
 
 
 @dataclass
@@ -47,6 +51,14 @@ class Junction:
 
 
 @dataclass
+class RailwayCrossing:
+    """A railway level crossing."""
+    node_id: int
+    lat: float
+    lon: float
+
+
+@dataclass
 class RoadNetwork:
     """Cached road network for a geographic area."""
     nodes: Dict[int, Node] = field(default_factory=dict)
@@ -54,6 +66,8 @@ class RoadNetwork:
     junctions: Dict[int, Junction] = field(default_factory=dict)
     # Node ID -> list of Way IDs that contain this node
     node_to_ways: Dict[int, List[int]] = field(default_factory=dict)
+    # Railway level crossings
+    railway_crossings: Dict[int, RailwayCrossing] = field(default_factory=dict)
 
     def get_way_geometry(self, way_id: int) -> List[Tuple[float, float]]:
         """Get list of (lat, lon) points for a way."""
@@ -93,6 +107,7 @@ class PBFRoadHandler(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
         self.nodes: Dict[int, Node] = {}
         self.ways: Dict[int, Way] = {}
         self.needed_nodes: Set[int] = set()
+        self.railway_crossings: Dict[int, RailwayCrossing] = {}
 
     def _in_bounds(self, lat: float, lon: float) -> bool:
         """Check if point is within our bounds."""
@@ -115,6 +130,10 @@ class PBFRoadHandler(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
         oneway = tags.get("oneway", "no") in ("yes", "true", "1")
         speed_limit = self._parse_speed_limit(tags.get("maxspeed", ""))
         bridge = tags.get("bridge", "no") not in ("no", "")
+        tunnel = tags.get("tunnel", "no") not in ("no", "")
+        surface = tags.get("surface", "")
+        ford = tags.get("ford", "no") not in ("no", "")
+        traffic_calming = tags.get("traffic_calming", "")
 
         self.ways[w.id] = Way(
             id=w.id,
@@ -124,6 +143,10 @@ class PBFRoadHandler(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
             oneway=oneway,
             speed_limit=speed_limit,
             bridge=bridge,
+            tunnel=tunnel,
+            surface=surface,
+            ford=ford,
+            traffic_calming=traffic_calming,
         )
         self.needed_nodes.update(node_refs)
 
@@ -135,6 +158,14 @@ class PBFRoadHandler(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
                 lat=n.location.lat,
                 lon=n.location.lon,
             )
+            # Check for railway level crossing
+            tags = {tag.k: tag.v for tag in n.tags}
+            if tags.get("railway") == "level_crossing":
+                self.railway_crossings[n.id] = RailwayCrossing(
+                    node_id=n.id,
+                    lat=n.location.lat,
+                    lon=n.location.lon,
+                )
 
     def _parse_speed_limit(self, value: str) -> int:
         """Parse OSM maxspeed tag to km/h."""
@@ -233,6 +264,11 @@ class MapLoader:
                     is_t_junction=self._is_t_junction(nid, way_ids, network),
                 )
 
+        # Copy railway crossings that are on roads we have
+        for nid, crossing in handler.railway_crossings.items():
+            if nid in network.node_to_ways:
+                network.railway_crossings[nid] = crossing
+
         return network
 
     def load_around(
@@ -292,6 +328,11 @@ class MapLoader:
         for nid, way_ids in network.node_to_ways.items():
             if len(way_ids) >= 2 and nid in full_network.junctions:
                 network.junctions[nid] = full_network.junctions[nid]
+
+        # Copy railway crossings that are on our roads
+        for nid in network.node_to_ways:
+            if nid in full_network.railway_crossings:
+                network.railway_crossings[nid] = full_network.railway_crossings[nid]
 
         # Cache query result
         self._query_cache = network

@@ -5,7 +5,10 @@ from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple
 
 from .corners import Corner, Direction
-from .path_projector import JunctionInfo, BridgeInfo
+from .path_projector import (
+    JunctionInfo, BridgeInfo, TunnelInfo, RailwayCrossingInfo,
+    FordInfo, SpeedBumpInfo, SurfaceChangeInfo
+)
 from . import config
 
 
@@ -14,6 +17,11 @@ class NoteType(Enum):
     JUNCTION = "junction"
     CAUTION = "caution"
     BRIDGE = "bridge"
+    TUNNEL = "tunnel"
+    RAILWAY = "railway"
+    FORD = "ford"
+    SPEED_BUMP = "speed_bump"
+    SURFACE = "surface"
 
 
 @dataclass
@@ -30,8 +38,10 @@ class Pacenote:
 class PacenoteGenerator:
     """Generates rally-style pacenote text from corners and junctions."""
 
-    # Distance callouts
+    # Distance callouts (distance_m, spoken_text)
     DISTANCE_CALLS = [
+        (1000, "one thousand"),
+        (500, "five hundred"),
         (400, "four hundred"),
         (300, "three hundred"),
         (200, "two hundred"),
@@ -41,6 +51,10 @@ class PacenoteGenerator:
         (50, "fifty"),
         (30, "thirty"),
     ]
+
+    # Distance brackets for multi-callout features (called at each bracket)
+    MULTI_CALLOUT_DISTANCES = [500, 300, 100]  # Hazards: far, medium, close
+    CORNER_CALLOUT_DISTANCES = [1000, 500, 100]  # Corners: very far, far, close
 
     # Severity names (index = severity number)
     SEVERITY_NAMES = [
@@ -75,8 +89,13 @@ class PacenoteGenerator:
         corners: List[Corner],
         junctions: List[JunctionInfo],
         bridges: Optional[List[BridgeInfo]] = None,
+        tunnels: Optional[List[TunnelInfo]] = None,
+        railway_crossings: Optional[List[RailwayCrossingInfo]] = None,
+        fords: Optional[List[FordInfo]] = None,
+        speed_bumps: Optional[List[SpeedBumpInfo]] = None,
+        surface_changes: Optional[List[SurfaceChangeInfo]] = None,
     ) -> List[Pacenote]:
-        """Generate pacenotes for upcoming corners, junctions, and bridges."""
+        """Generate pacenotes for upcoming corners, junctions, and road features."""
         notes = []
 
         # Process corners
@@ -103,13 +122,94 @@ class PacenoteGenerator:
                     if note:
                         notes.append(note)
 
+        # Process tunnels
+        if tunnels:
+            for tunnel in tunnels:
+                if tunnel.distance_m <= self.distance_threshold:
+                    note = self._tunnel_to_note(tunnel)
+                    if note:
+                        notes.append(note)
+
+        # Process railway crossings
+        if railway_crossings:
+            for crossing in railway_crossings:
+                if crossing.distance_m <= self.distance_threshold:
+                    note = self._railway_to_note(crossing)
+                    if note:
+                        notes.append(note)
+
+        # Process fords
+        if fords:
+            for ford in fords:
+                if ford.distance_m <= self.distance_threshold:
+                    note = self._ford_to_note(ford)
+                    if note:
+                        notes.append(note)
+
+        # Process speed bumps
+        if speed_bumps:
+            for bump in speed_bumps:
+                if bump.distance_m <= self.distance_threshold:
+                    note = self._speed_bump_to_note(bump)
+                    if note:
+                        notes.append(note)
+
+        # Process surface changes
+        if surface_changes:
+            for change in surface_changes:
+                if change.distance_m <= self.distance_threshold:
+                    note = self._surface_change_to_note(change)
+                    if note:
+                        notes.append(note)
+
         # Sort by distance
         notes.sort(key=lambda n: n.distance_m)
+
+        # Filter out long-distance corner callouts if there's something between us and the corner
+        # (except for things within merge distance which will be combined with "into")
+        notes = self._filter_blocked_corners(notes)
 
         # Merge adjacent notes that are within MERGE_DISTANCE_M of each other
         notes = self._merge_adjacent_notes(notes)
 
         return notes
+
+    def _filter_blocked_corners(self, notes: List[Pacenote]) -> List[Pacenote]:
+        """
+        Remove long-distance corner callouts if there's something between us and the corner.
+
+        Corners at 1000m or 500m brackets should only be called if they're the first thing
+        ahead, or if everything before them is within merge distance (will be "into" chained).
+        """
+        if len(notes) < 2:
+            return notes
+
+        filtered = []
+        for i, note in enumerate(notes):
+            # Only filter corners at long-distance brackets (1000 or 500)
+            if note.note_type != NoteType.CORNER:
+                filtered.append(note)
+                continue
+
+            # Check if this is a long-distance bracket (key ends with _1000 or _500)
+            if not (note.unique_key.endswith("_1000") or note.unique_key.endswith("_500")):
+                filtered.append(note)
+                continue
+
+            # Check if there's anything closer that's outside merge distance
+            blocked = False
+            for j in range(i):  # All notes before this one (closer to us)
+                closer_note = notes[j]
+                distance_gap = note.distance_m - closer_note.distance_m
+                if distance_gap > self.MERGE_DISTANCE_M:
+                    # Something is between us and this corner, outside merge range
+                    blocked = True
+                    break
+
+            if not blocked:
+                filtered.append(note)
+
+        return filtered
 
     def _merge_adjacent_notes(self, notes: List[Pacenote]) -> List[Pacenote]:
         """
@@ -175,6 +275,14 @@ class PacenoteGenerator:
     # Minimum distance to call a corner (avoid calling corners we're already in)
     MIN_CALLOUT_DISTANCE_M = 20
 
+    # Note types that use multi-callout (called at multiple distance brackets)
+    # Hazards: 500/300/100m, Corners: 1000/500/100m
+    MULTI_CALLOUT_TYPES = {
+        NoteType.CORNER,  # 1000/500/100m
+        NoteType.TUNNEL, NoteType.RAILWAY, NoteType.FORD,
+        NoteType.SPEED_BUMP, NoteType.SURFACE,  # 500/300/100m
+    }
+
     def should_call(self, note: Pacenote) -> Tuple[bool, Optional[Pacenote]]:
         """
         Check if this note should be called now.
@@ -185,8 +293,15 @@ class PacenoteGenerator:
         Returns: (should_call, filtered_note) where filtered_note may have
         already-called components removed from merged notes.
         """
-        # Only call notes within callout distance
-        if note.distance_m > self.callout_distance:
+        # Multi-callout types can be called at longer distances
+        # Corners: up to 1025m, Hazards: up to 525m, Others: callout_distance (100m)
+        if note.note_type == NoteType.CORNER:
+            max_distance = 1025
+        elif note.note_type in self.MULTI_CALLOUT_TYPES:
+            max_distance = 525
+        else:
+            max_distance = self.callout_distance
+        if note.distance_m > max_distance:
             return False, None
 
         # Don't call notes we're already on top of
@@ -260,12 +375,20 @@ class PacenoteGenerator:
 
     def _corner_to_note(self, corner: Corner) -> Optional[Pacenote]:
         """Convert a corner to a pacenote."""
-        # Use apex position as unique key (doesn't change as car approaches)
+        # Multi-callout: get distance bracket (1000, 500, or 100)
+        bracket = self._get_corner_distance_bracket(corner.entry_distance)
+        if bracket is None:
+            return None
+
+        # Use apex position as cache key for corner classification
         # Round to 4 decimal places (~11m) for stability across re-detections
-        unique_key = f"{corner.apex_lat:.4f},{corner.apex_lon:.4f}"
+        position_key = f"{corner.apex_lat:.4f},{corner.apex_lon:.4f}"
+
+        # Unique key includes bracket for multi-callout deduplication
+        unique_key = f"{position_key}_{bracket}"
 
         # Check cache for existing classification
-        cached_text = self._corner_cache.get(unique_key)
+        cached_text = self._corner_cache.get(position_key)
 
         if cached_text:
             # Use cached classification, just update distance
@@ -314,7 +437,7 @@ class PacenoteGenerator:
 
             # Cache the classification (without distance)
             cached_text = " ".join(parts)
-            self._corner_cache[unique_key] = cached_text
+            self._corner_cache[position_key] = cached_text
 
             # Add distance for output
             distance_call = self._get_distance_call(corner.entry_distance)
@@ -382,11 +505,202 @@ class PacenoteGenerator:
             unique_key=unique_key,
         )
 
+    def _tunnel_to_note(self, tunnel: TunnelInfo) -> Optional[Pacenote]:
+        """Convert a tunnel to a pacenote."""
+        # Multi-callout: include distance bracket in unique key
+        bracket = self._get_distance_bracket(tunnel.distance_m)
+        if bracket is None:
+            return None
+
+        parts = []
+
+        distance_call = self._get_distance_call(tunnel.distance_m)
+        if distance_call:
+            parts.append(distance_call)
+
+        parts.append("tunnel")
+
+        text = " ".join(parts)
+        unique_key = f"tunnel_{tunnel.way_id}_{bracket}"
+
+        return Pacenote(
+            text=text,
+            distance_m=tunnel.distance_m,
+            note_type=NoteType.TUNNEL,
+            priority=4,  # Informational
+            unique_key=unique_key,
+        )
+
+    def _railway_to_note(self, crossing: RailwayCrossingInfo) -> Optional[Pacenote]:
+        """Convert a railway crossing to a pacenote."""
+        # Multi-callout: include distance bracket in unique key
+        bracket = self._get_distance_bracket(crossing.distance_m)
+        if bracket is None:
+            return None
+
+        parts = []
+
+        distance_call = self._get_distance_call(crossing.distance_m)
+        if distance_call:
+            parts.append(distance_call)
+
+        parts.append("over rails")
+
+        text = " ".join(parts)
+        unique_key = f"railway_{crossing.node_id}_{bracket}"
+
+        return Pacenote(
+            text=text,
+            distance_m=crossing.distance_m,
+            note_type=NoteType.RAILWAY,
+            priority=3,  # Safety - need to slow down
+            unique_key=unique_key,
+        )
+
+    def _ford_to_note(self, ford: FordInfo) -> Optional[Pacenote]:
+        """Convert a ford (water crossing) to a pacenote."""
+        # Multi-callout: include distance bracket in unique key
+        bracket = self._get_distance_bracket(ford.distance_m)
+        if bracket is None:
+            return None
+
+        parts = []
+
+        distance_call = self._get_distance_call(ford.distance_m)
+        if distance_call:
+            parts.append(distance_call)
+
+        parts.append("water")
+
+        text = " ".join(parts)
+        unique_key = f"ford_{ford.way_id}_{bracket}"
+
+        return Pacenote(
+            text=text,
+            distance_m=ford.distance_m,
+            note_type=NoteType.FORD,
+            priority=3,  # Safety - need to slow down
+            unique_key=unique_key,
+        )
+
+    def _speed_bump_to_note(self, bump: SpeedBumpInfo) -> Optional[Pacenote]:
+        """Convert a speed bump to a pacenote."""
+        # Multi-callout: include distance bracket in unique key
+        bracket = self._get_distance_bracket(bump.distance_m)
+        if bracket is None:
+            return None
+
+        parts = []
+
+        distance_call = self._get_distance_call(bump.distance_m)
+        if distance_call:
+            parts.append(distance_call)
+
+        # Use "bump" for single bumps, "bumps" for tables/humps (often multiple)
+        if bump.bump_type in ("table", "hump"):
+            parts.append("bumps")
+        else:
+            parts.append("bump")
+
+        text = " ".join(parts)
+        unique_key = f"bump_{bump.way_id}_{bracket}"
+
+        return Pacenote(
+            text=text,
+            distance_m=bump.distance_m,
+            note_type=NoteType.SPEED_BUMP,
+            priority=4,  # Need to slow down
+            unique_key=unique_key,
+        )
+
+    # Surface type mappings for callouts
+    SURFACE_CALLOUTS = {
+        "asphalt": "tarmac",
+        "paved": "tarmac",
+        "concrete": "concrete",
+        "gravel": "gravel",
+        "unpaved": "gravel",
+        "dirt": "gravel",
+        "ground": "gravel",
+        "grass": "gravel",
+        "sand": "gravel",
+        "mud": "gravel",
+    }
+
+    def _surface_change_to_note(self, change: SurfaceChangeInfo) -> Optional[Pacenote]:
+        """Convert a surface change to a pacenote."""
+        # Multi-callout: include distance bracket in unique key
+        bracket = self._get_distance_bracket(change.distance_m)
+        if bracket is None:
+            return None
+
+        # Map surface types to callout words
+        to_surface = self.SURFACE_CALLOUTS.get(change.to_surface, "")
+        if not to_surface:
+            return None  # Unknown surface type, skip
+
+        parts = []
+
+        distance_call = self._get_distance_call(change.distance_m)
+        if distance_call:
+            parts.append(distance_call)
+
+        parts.append(f"onto {to_surface}")
+
+        text = " ".join(parts)
+        unique_key = f"surface_{change.way_id}_{bracket}"
+
+        return Pacenote(
+            text=text,
+            distance_m=change.distance_m,
+            note_type=NoteType.SURFACE,
+            priority=4,  # Informational but important for grip
+            unique_key=unique_key,
+        )
+
     def _get_distance_call(self, distance_m: float) -> Optional[str]:
         """Get distance callout for the given distance."""
         for threshold, call in self.DISTANCE_CALLS:
             if distance_m >= threshold - 25 and distance_m <= threshold + 25:
                 return call
+        return None
+
+    def _get_distance_bracket(self, distance_m: float) -> Optional[int]:
+        """
+        Get the distance bracket for multi-callout hazard features.
+
+        Returns the bracket (e.g., 500, 300, 100) if within range, None otherwise.
+        Features are called when entering each bracket's range.
+        """
+        for bracket in self.MULTI_CALLOUT_DISTANCES:
+            # Bracket triggers when distance is within bracket to bracket-100m
+            # e.g., 500 bracket triggers from 500m down to 400m
+            #       300 bracket triggers from 300m down to 200m
+            #       100 bracket triggers from 100m down to 0m
+            lower_bound = max(0, bracket - 100)
+            if lower_bound <= distance_m <= bracket + 25:
+                return bracket
+        return None
+
+    def _get_corner_distance_bracket(self, distance_m: float) -> Optional[int]:
+        """
+        Get the distance bracket for corner callouts.
+
+        Returns the bracket (e.g., 1000, 500, 100) if within range, None otherwise.
+        """
+        for bracket in self.CORNER_CALLOUT_DISTANCES:
+            if bracket == 1000:
+                # 1000 bracket: 900-1025m
+                if 900 <= distance_m <= 1025:
+                    return bracket
+            elif bracket == 500:
+                # 500 bracket: 400-525m
+                if 400 <= distance_m <= 525:
+                    return bracket
+            else:
+                # 100 bracket: 20-125m (MIN_CALLOUT_DISTANCE_M to 125)
+                if self.MIN_CALLOUT_DISTANCE_M <= distance_m <= 125:
+                    return bracket
         return None
 
     def _calculate_priority(self, corner: Corner) -> int:

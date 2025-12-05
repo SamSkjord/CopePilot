@@ -1,7 +1,7 @@
 """Project path ahead based on current position and heading."""
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from .geometry import (
@@ -31,7 +31,12 @@ class ProjectedPath:
     points: List[PathPoint]
     junctions: List["JunctionInfo"]
     bridges: List["BridgeInfo"]
-    total_distance: float
+    tunnels: List["TunnelInfo"] = field(default_factory=list)
+    railway_crossings: List["RailwayCrossingInfo"] = field(default_factory=list)
+    fords: List["FordInfo"] = field(default_factory=list)
+    speed_bumps: List["SpeedBumpInfo"] = field(default_factory=list)
+    surface_changes: List["SurfaceChangeInfo"] = field(default_factory=list)
+    total_distance: float = 0.0
 
 
 @dataclass
@@ -52,6 +57,54 @@ class BridgeInfo:
     lat: float
     lon: float
     distance_m: float
+    way_id: int
+
+
+@dataclass
+class TunnelInfo:
+    """Information about an upcoming tunnel."""
+    lat: float
+    lon: float
+    distance_m: float
+    way_id: int
+
+
+@dataclass
+class RailwayCrossingInfo:
+    """Information about an upcoming railway level crossing."""
+    lat: float
+    lon: float
+    distance_m: float
+    node_id: int
+
+
+@dataclass
+class FordInfo:
+    """Information about an upcoming ford (water crossing)."""
+    lat: float
+    lon: float
+    distance_m: float
+    way_id: int
+
+
+@dataclass
+class SpeedBumpInfo:
+    """Information about an upcoming speed bump."""
+    lat: float
+    lon: float
+    distance_m: float
+    way_id: int
+    bump_type: str  # bump, hump, table, etc.
+
+
+@dataclass
+class SurfaceChangeInfo:
+    """Information about an upcoming surface change."""
+    lat: float
+    lon: float
+    distance_m: float
+    from_surface: str
+    to_surface: str
     way_id: int
 
 
@@ -159,11 +212,21 @@ class PathProjector:
         points: List[PathPoint] = []
         junctions: List[JunctionInfo] = []
         bridges: List[BridgeInfo] = []
+        tunnels: List[TunnelInfo] = []
+        railway_crossings: List[RailwayCrossingInfo] = []
+        fords: List[FordInfo] = []
+        speed_bumps: List[SpeedBumpInfo] = []
+        surface_changes: List[SurfaceChangeInfo] = []
         total_distance = 0.0
 
         # Start from current position
         visited_ways = {way_id}
         visited_bridges = set()  # Track bridge ways already recorded
+        visited_tunnels = set()
+        visited_fords = set()
+        visited_speed_bumps = set()
+        visited_railway_crossings = set()
+        current_surface = ""  # Track for surface change detection
 
         while total_distance < max_distance:
             way = self.network.ways.get(way_id)
@@ -174,17 +237,62 @@ class PathProjector:
             if len(geometry) < 2:
                 break
 
-            # Check for bridge at start of this way
+            # Check for way-level features at start of this way
+            feature_pt = geometry[node_idx] if node_idx < len(geometry) else geometry[0]
+
+            # Bridge
             if way.bridge and way_id not in visited_bridges:
                 visited_bridges.add(way_id)
-                # Use first point of this way segment as bridge location
-                bridge_pt = geometry[node_idx] if node_idx < len(geometry) else geometry[0]
                 bridges.append(BridgeInfo(
-                    lat=bridge_pt[0],
-                    lon=bridge_pt[1],
+                    lat=feature_pt[0],
+                    lon=feature_pt[1],
                     distance_m=total_distance,
                     way_id=way_id,
                 ))
+
+            # Tunnel
+            if way.tunnel and way_id not in visited_tunnels:
+                visited_tunnels.add(way_id)
+                tunnels.append(TunnelInfo(
+                    lat=feature_pt[0],
+                    lon=feature_pt[1],
+                    distance_m=total_distance,
+                    way_id=way_id,
+                ))
+
+            # Ford
+            if way.ford and way_id not in visited_fords:
+                visited_fords.add(way_id)
+                fords.append(FordInfo(
+                    lat=feature_pt[0],
+                    lon=feature_pt[1],
+                    distance_m=total_distance,
+                    way_id=way_id,
+                ))
+
+            # Speed bump / traffic calming
+            if way.traffic_calming and way_id not in visited_speed_bumps:
+                visited_speed_bumps.add(way_id)
+                speed_bumps.append(SpeedBumpInfo(
+                    lat=feature_pt[0],
+                    lon=feature_pt[1],
+                    distance_m=total_distance,
+                    way_id=way_id,
+                    bump_type=way.traffic_calming,
+                ))
+
+            # Surface change detection
+            if way.surface and way.surface != current_surface:
+                if current_surface:  # Only record if we had a previous surface
+                    surface_changes.append(SurfaceChangeInfo(
+                        lat=feature_pt[0],
+                        lon=feature_pt[1],
+                        distance_m=total_distance,
+                        from_surface=current_surface,
+                        to_surface=way.surface,
+                        way_id=way_id,
+                    ))
+                current_surface = way.surface
 
             # Add points along this way
             if forward:
@@ -212,6 +320,19 @@ class PathProjector:
                     way_id=way_id,
                     node_index=i,
                 ))
+
+                # Check for railway crossing at this node
+                node_id = way.nodes[i]
+                if node_id in self.network.railway_crossings and node_id not in visited_railway_crossings:
+                    visited_railway_crossings.add(node_id)
+                    crossing = self.network.railway_crossings[node_id]
+                    railway_crossings.append(RailwayCrossingInfo(
+                        lat=crossing.lat,
+                        lon=crossing.lon,
+                        distance_m=total_distance,
+                        node_id=node_id,
+                    ))
+
                 prev_point = pt
 
             if total_distance > max_distance:
@@ -293,6 +414,11 @@ class PathProjector:
             points=points,
             junctions=junctions,
             bridges=bridges,
+            tunnels=tunnels,
+            railway_crossings=railway_crossings,
+            fords=fords,
+            speed_bumps=speed_bumps,
+            surface_changes=surface_changes,
             total_distance=total_distance,
         )
 

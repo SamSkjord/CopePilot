@@ -57,6 +57,16 @@ class JanneSampleLibrary:
         "junction": "detail_junction",
         "left_entry_chicane": "detail_left_entry_chicane",
         "right_entry_chicane": "detail_right_entry_chicane",
+        # Road hazards
+        "tunnel": "detail_tunnel",
+        "over_rails": "detail_over_rails",
+        "water": "detail_water",
+        "bump": "detail_bump",
+        "bumps": "detail_bumps",
+        # Surface changes
+        "onto_gravel": "detail_onto_gravel",
+        "onto_tarmac": "detail_onto_tarmac",
+        "onto_concrete": "detail_onto_concrete",
     }
 
     NUMBER_MAP = {
@@ -77,6 +87,8 @@ class JanneSampleLibrary:
         "300": "number_300",
         "350": "number_350",
         "400": "number_400",
+        "500": "number_500",
+        "1000": "number_1000",
     }
 
     def __init__(self, sample_dir: Path):
@@ -302,6 +314,14 @@ class AudioPlayer:
 
         while i < len(parts):
             # Distance callouts
+            if parts[i] == "one" and i + 1 < len(parts) and parts[i + 1] == "thousand":
+                keys.append("1000")
+                i += 2
+                continue
+            if parts[i] == "five" and i + 1 < len(parts) and parts[i + 1] == "hundred":
+                keys.append("500")
+                i += 2
+                continue
             if parts[i] in ("one", "two", "three", "four") and i + 1 < len(parts) and parts[i + 1] == "hundred":
                 num = {"one": "100", "two": "200", "three": "300", "four": "400"}[parts[i]]
                 keys.append(num)
@@ -394,6 +414,38 @@ class AudioPlayer:
             if parts[i] == "over" and i + 1 < len(parts) and parts[i + 1] == "bridge":
                 keys.append("over_bridge")
                 i += 2
+                continue
+
+            # "over rails" (railway crossing)
+            if parts[i] == "over" and i + 1 < len(parts) and parts[i + 1] == "rails":
+                keys.append("over_rails")
+                i += 2
+                continue
+
+            # "onto" surface changes
+            if parts[i] == "onto" and i + 1 < len(parts):
+                surface = parts[i + 1]
+                if surface in ("gravel", "tarmac", "concrete"):
+                    keys.append(f"onto_{surface}")
+                    i += 2
+                    continue
+
+            # Road hazards (single words)
+            if parts[i] == "tunnel":
+                keys.append("tunnel")
+                i += 1
+                continue
+            if parts[i] == "water":
+                keys.append("water")
+                i += 1
+                continue
+            if parts[i] == "bump":
+                keys.append("bump")
+                i += 1
+                continue
+            if parts[i] == "bumps":
+                keys.append("bumps")
+                i += 1
                 continue
 
             # Skip unknown words
