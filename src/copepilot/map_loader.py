@@ -255,23 +255,24 @@ class MapLoader:
         self._find_map_files()
 
     def _find_map_files(self) -> None:
-        """Find pickle cache and/or PBF file, or detect tile mode."""
+        """Find pickle cache and/or PBF file, or detect multi-file mode."""
         if self.map_path.is_dir():
-            # Check for tile files first
-            tile_pkls = list(self.map_path.glob("tile_*.roads.pkl"))
-            if tile_pkls:
-                self._tile_mode = True
-                self._tile_dir = self.map_path
-                print(f"  Tile mode: found {len(tile_pkls)} tiles")
-                return
-
-            # Look for single map files
+            # Look for pickle files
             pkls = list(self.map_path.glob("*.roads.pkl"))
             pbfs = list(self.map_path.glob("*.osm.pbf"))
 
+            if len(pkls) > 1:
+                # Multi-file mode: multiple county/region pickles
+                self._tile_mode = True
+                self._tile_dir = self.map_path
+                print(f"  Multi-region mode: found {len(pkls)} map files")
+                # Build bounds index
+                self._build_region_index(pkls)
+                return
+
             if pkls:
-                # Use most recent pickle
-                self._pkl_file = max(pkls, key=lambda p: p.stat().st_mtime)
+                # Single pickle file
+                self._pkl_file = pkls[0]
             if pbfs:
                 # Use most recent PBF
                 self._pbf_file = max(pbfs, key=lambda p: p.stat().st_mtime)
@@ -285,6 +286,40 @@ class MapLoader:
                 pkl_path = self.map_path.with_suffix(".roads.pkl")
                 if pkl_path.exists():
                     self._pkl_file = pkl_path
+
+    def _build_region_index(self, pkl_files: List[Path]) -> None:
+        """Build index of region bounds from pickle files."""
+        self._region_bounds: Dict[str, Tuple[float, float, float, float]] = {}
+
+        for pkl_path in pkl_files:
+            try:
+                # Quick scan to get bounds (min_lat, min_lon, max_lat, max_lon)
+                with open(pkl_path, "rb") as f:
+                    network = pickle.load(f)
+
+                if not network.nodes:
+                    continue
+
+                lats = [n.lat for n in network.nodes.values()]
+                lons = [n.lon for n in network.nodes.values()]
+                bounds = (min(lats), min(lons), max(lats), max(lons))
+                self._region_bounds[pkl_path.stem] = bounds
+
+                # Don't keep in memory - will load on demand
+                del network
+
+            except Exception as e:
+                print(f"  Warning: Could not index {pkl_path.name}: {e}")
+
+        print(f"  Indexed {len(self._region_bounds)} regions")
+
+    def _find_regions_for_position(self, lat: float, lon: float) -> List[str]:
+        """Find region names that contain the given position."""
+        matching = []
+        for name, (min_lat, min_lon, max_lat, max_lon) in self._region_bounds.items():
+            if min_lat <= lat <= max_lat and min_lon <= lon <= max_lon:
+                matching.append(name)
+        return matching
 
     def _get_tile_name(self, lat: float, lon: float) -> str:
         """Get tile name for a position."""
@@ -300,19 +335,25 @@ class MapLoader:
                 tiles.append(self._get_tile_name(lat + dlat, lon + dlon))
         return tiles
 
-    def _load_tile(self, tile_name: str) -> Optional[RoadNetwork]:
-        """Load a tile from cache or disk."""
+    def _load_tile(self, region_name: str) -> Optional[RoadNetwork]:
+        """Load a region/tile from cache or disk."""
         # Check memory cache
-        if tile_name in self._tile_cache:
+        if region_name in self._tile_cache:
             # Update LRU order
-            if tile_name in self._tile_access_order:
-                self._tile_access_order.remove(tile_name)
-            self._tile_access_order.append(tile_name)
-            return self._tile_cache[tile_name]
+            if region_name in self._tile_access_order:
+                self._tile_access_order.remove(region_name)
+            self._tile_access_order.append(region_name)
+            return self._tile_cache[region_name]
 
-        # Try to load from disk
-        pkl_path = self._tile_dir / f"{tile_name}.roads.pkl"
-        if not pkl_path.exists():
+        # Try to load from disk - check multiple patterns
+        pkl_path = None
+        for pattern in [f"{region_name}.roads.pkl", f"{region_name}-latest.osm.roads.pkl"]:
+            candidate = self._tile_dir / pattern
+            if candidate.exists():
+                pkl_path = candidate
+                break
+
+        if not pkl_path:
             return None
 
         try:
@@ -320,17 +361,17 @@ class MapLoader:
                 network = pickle.load(f)
 
             # Add to cache
-            self._tile_cache[tile_name] = network
-            self._tile_access_order.append(tile_name)
+            self._tile_cache[region_name] = network
+            self._tile_access_order.append(region_name)
 
-            # Evict old tiles if over limit
+            # Evict old regions if over limit
             while len(self._tile_cache) > self.MAX_LOADED_TILES:
-                old_tile = self._tile_access_order.pop(0)
-                del self._tile_cache[old_tile]
+                old_region = self._tile_access_order.pop(0)
+                del self._tile_cache[old_region]
 
             return network
         except Exception as e:
-            print(f"  Error loading tile {tile_name}: {e}")
+            print(f"  Error loading region {region_name}: {e}")
             return None
 
     def _merge_networks(self, networks: List[RoadNetwork]) -> RoadNetwork:
@@ -354,21 +395,29 @@ class MapLoader:
     def _load_around_tiles(
         self, lat: float, lon: float, radius_m: float
     ) -> RoadNetwork:
-        """Load road network from tiles around a point."""
-        # Get current and adjacent tile names
-        current_tile = self._get_tile_name(lat, lon)
-        needed_tiles = self._get_adjacent_tiles(lat, lon)
+        """Load road network from region files around a point."""
+        # Find regions that contain this position
+        if hasattr(self, '_region_bounds') and self._region_bounds:
+            # Multi-region mode: use bounds index
+            needed_regions = self._find_regions_for_position(lat, lon)
+            if not needed_regions:
+                # No exact match - find closest region
+                print(f"  Warning: No region contains {lat:.2f}, {lon:.2f}")
+                return RoadNetwork()
+        else:
+            # Grid tile mode (fallback)
+            current_tile = self._get_tile_name(lat, lon)
+            needed_regions = self._get_adjacent_tiles(lat, lon)
 
-        # Load needed tiles
+        # Load needed regions
         networks = []
-        for tile_name in needed_tiles:
-            network = self._load_tile(tile_name)
+        for region_name in needed_regions:
+            network = self._load_tile(region_name)
             if network:
                 networks.append(network)
 
         if not networks:
-            print(f"  Warning: No tiles found for {lat:.2f}, {lon:.2f}")
-            print(f"  Expected tile: {current_tile}")
+            print(f"  Warning: No map data for {lat:.2f}, {lon:.2f}")
             return RoadNetwork()
 
         # Merge tiles
