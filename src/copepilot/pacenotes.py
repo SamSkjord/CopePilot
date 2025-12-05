@@ -56,7 +56,9 @@ class PacenoteGenerator:
 
     # Distance brackets for multi-callout features (called at each bracket)
     MULTI_CALLOUT_DISTANCES = [500, 300, 100]  # Hazards: far, medium, close
-    CORNER_CALLOUT_DISTANCES = [1000, 500, 100]  # Corners: very far, far, close
+    # Corners: 1000/500 for long-range, 300/200/100 for close range
+    # Medium brackets (300/200) only trigger on clear runs (filtered if closer corner exists)
+    CORNER_CALLOUT_DISTANCES = [1000, 500, 300, 200, 100]
 
     # Severity names (index = severity number)
     SEVERITY_NAMES = [
@@ -221,8 +223,9 @@ class PacenoteGenerator:
                 filtered.append(note)
                 continue
 
-            # Check if this is a long-distance bracket (key ends with _1000 or _500)
-            if not (note.unique_key.endswith("_1000") or note.unique_key.endswith("_500")):
+            # Check if this is a filterable bracket (200m and above)
+            # 100m bracket always passes - it's the final call before the corner
+            if note.unique_key.endswith("_100"):
                 filtered.append(note)
                 continue
 
@@ -444,7 +447,8 @@ class PacenoteGenerator:
 
         if cached_text:
             # Use cached classification, just update distance
-            distance_call = self._get_distance_call(corner.entry_distance)
+            # Use bracket value (not actual distance) for consistent callouts
+            distance_call = self._get_distance_call(bracket)
             if distance_call:
                 text = f"{distance_call} {cached_text}"
             else:
@@ -491,8 +495,8 @@ class PacenoteGenerator:
             cached_text = " ".join(parts)
             self._corner_cache[position_key] = cached_text
 
-            # Add distance for output
-            distance_call = self._get_distance_call(corner.entry_distance)
+            # Add distance for output (use bracket for consistent callouts)
+            distance_call = self._get_distance_call(bracket)
             if distance_call:
                 text = f"{distance_call} {cached_text}"
             else:
@@ -738,7 +742,8 @@ class PacenoteGenerator:
         """
         Get the distance bracket for corner callouts.
 
-        Returns the bracket (e.g., 1000, 500, 100) if within range, None otherwise.
+        Returns the bracket (e.g., 1000, 500, 300, 200, 100) if within range, None otherwise.
+        Medium brackets (300/200) fill the gap for clear runs - filtered if closer corners exist.
         """
         for bracket in self.CORNER_CALLOUT_DISTANCES:
             if bracket == 1000:
@@ -749,9 +754,17 @@ class PacenoteGenerator:
                 # 500 bracket: 400-525m
                 if 400 <= distance_m <= 525:
                     return bracket
+            elif bracket == 300:
+                # 300 bracket: 250-325m
+                if 250 <= distance_m <= 325:
+                    return bracket
+            elif bracket == 200:
+                # 200 bracket: 150-225m
+                if 150 <= distance_m <= 225:
+                    return bracket
             else:
-                # 100 bracket: 20-125m (MIN_CALLOUT_DISTANCE_M to 125)
-                if self.MIN_CALLOUT_DISTANCE_M <= distance_m <= 125:
+                # 100 bracket: 20-150m (extended slightly for overlap)
+                if self.MIN_CALLOUT_DISTANCE_M <= distance_m <= 150:
                     return bracket
         return None
 

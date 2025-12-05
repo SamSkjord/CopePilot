@@ -125,6 +125,9 @@ player.stop()
 | junction | T-junction ahead (road ends) |
 | chicane left/right | S-bend starting left or right |
 | into | Links two features called in quick succession |
+| cattle grid | Cattle grid on road |
+| gate | Gate across road |
+| narrows | Road narrows ahead |
 
 ## Multi-Callout System
 
@@ -132,9 +135,20 @@ Features are called at multiple distances to give the driver advance warning:
 
 | Feature Type | Callout Distances | Notes |
 |--------------|-------------------|-------|
-| Corners | 1000m, 500m, 100m | Only if nothing else between driver and corner |
-| Hazards (rails, water, bumps, tunnels, surface) | 500m, 300m, 100m | Always called at each bracket |
+| Corners | 1000m, 500m, 300m, 200m, 100m | Variable - uses earliest clear bracket |
+| Hazards (rails, water, bumps, tunnels, surface, cattle grids, gates, narrows) | 500m, 300m, 100m | Called at each bracket |
 | Bridges, Junctions | 100m only | Single callout |
+
+### Corner Callout Logic
+
+- Corners at 200m+ brackets only called if no closer corner exists (clear run)
+- 100m bracket always called - it's the final warning before the corner
+- On twisty roads: corners called at 100m as each becomes the closest
+- On clear runs: corners called earlier at 200-300m for advance warning
+
+### Speed-Scaled Timing
+
+At speeds above 20 m/s (45 mph), callout distances automatically extend to ensure minimum 5 seconds warning time before hazards.
 
 Adjacent features within 50m are merged with "into" (e.g., "over rails into left four").
 
