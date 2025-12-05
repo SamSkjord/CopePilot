@@ -120,11 +120,16 @@ class CopePilot:
             fords=path.fords,
             speed_bumps=path.speed_bumps,
             surface_changes=path.surface_changes,
+            barriers=path.barriers,
+            narrows=path.narrows,
         )
 
         # Speak/print notes that haven't been called yet
+        # Pass speed for speed-scaled callout timing
         for note in notes:
-            should_call, filtered_note = self.pacenote_gen.should_call(note)
+            should_call, filtered_note = self.pacenote_gen.should_call(
+                note, speed_mps=pos.speed
+            )
             if should_call and filtered_note:
                 if self.audio:
                     self.audio.say(filtered_note.text, filtered_note.priority)

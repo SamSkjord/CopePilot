@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from .corners import Corner, Direction
 from .path_projector import (
     JunctionInfo, BridgeInfo, TunnelInfo, RailwayCrossingInfo,
-    FordInfo, SpeedBumpInfo, SurfaceChangeInfo
+    FordInfo, SpeedBumpInfo, SurfaceChangeInfo, BarrierInfo, NarrowInfo
 )
 from . import config
 
@@ -22,6 +22,8 @@ class NoteType(Enum):
     FORD = "ford"
     SPEED_BUMP = "speed_bump"
     SURFACE = "surface"
+    BARRIER = "barrier"
+    NARROW = "narrow"
 
 
 @dataclass
@@ -94,6 +96,8 @@ class PacenoteGenerator:
         fords: Optional[List[FordInfo]] = None,
         speed_bumps: Optional[List[SpeedBumpInfo]] = None,
         surface_changes: Optional[List[SurfaceChangeInfo]] = None,
+        barriers: Optional[List[BarrierInfo]] = None,
+        narrows: Optional[List[NarrowInfo]] = None,
     ) -> List[Pacenote]:
         """Generate pacenotes for upcoming corners, junctions, and road features."""
         notes = []
@@ -159,6 +163,22 @@ class PacenoteGenerator:
             for change in surface_changes:
                 if change.distance_m <= self.distance_threshold:
                     note = self._surface_change_to_note(change)
+                    if note:
+                        notes.append(note)
+
+        # Process barriers (cattle grids, gates)
+        if barriers:
+            for barrier in barriers:
+                if barrier.distance_m <= self.distance_threshold:
+                    note = self._barrier_to_note(barrier)
+                    if note:
+                        notes.append(note)
+
+        # Process narrow sections
+        if narrows:
+            for narrow in narrows:
+                if narrow.distance_m <= self.distance_threshold:
+                    note = self._narrow_to_note(narrow)
                     if note:
                         notes.append(note)
 
@@ -281,14 +301,27 @@ class PacenoteGenerator:
         NoteType.CORNER,  # 1000/500/100m
         NoteType.TUNNEL, NoteType.RAILWAY, NoteType.FORD,
         NoteType.SPEED_BUMP, NoteType.SURFACE,  # 500/300/100m
+        NoteType.BARRIER, NoteType.NARROW,  # 500/300/100m
     }
 
-    def should_call(self, note: Pacenote) -> Tuple[bool, Optional[Pacenote]]:
+    # Speed-scaled timing: minimum warning time in seconds for different speeds
+    # At higher speeds, we need more distance to read the note
+    MIN_WARNING_TIME_S = 5.0  # Minimum time before hazard
+    SPEED_SCALE_THRESHOLD_MPS = 20.0  # Start scaling above this speed (45 mph)
+
+    def should_call(
+        self, note: Pacenote, speed_mps: float = 0
+    ) -> Tuple[bool, Optional[Pacenote]]:
         """
         Check if this note should be called now.
 
         Only calls notes within callout_distance_m and beyond min distance.
         Uses deduplication to prevent repeat calls for the same corner.
+        Speed-scaled timing extends distances at higher speeds.
+
+        Args:
+            note: The pacenote to check
+            speed_mps: Current speed in m/s (optional, for speed-scaled timing)
 
         Returns: (should_call, filtered_note) where filtered_note may have
         already-called components removed from merged notes.
@@ -301,6 +334,13 @@ class PacenoteGenerator:
             max_distance = 525
         else:
             max_distance = self.callout_distance
+
+        # Speed-scaled timing: at higher speeds, extend max distance
+        # to ensure minimum warning time
+        if speed_mps > self.SPEED_SCALE_THRESHOLD_MPS:
+            min_distance_for_time = speed_mps * self.MIN_WARNING_TIME_S
+            max_distance = max(max_distance, min_distance_for_time)
+
         if note.distance_m > max_distance:
             return False, None
 
@@ -716,3 +756,61 @@ class PacenoteGenerator:
         distance_factor = max(1, int(corner.entry_distance / 100))
 
         return severity_factor + distance_factor
+
+    def _barrier_to_note(self, barrier: BarrierInfo) -> Optional[Pacenote]:
+        """Convert a barrier (cattle grid, gate) to a pacenote."""
+        # Multi-callout: include distance bracket in unique key
+        bracket = self._get_distance_bracket(barrier.distance_m)
+        if bracket is None:
+            return None
+
+        parts = []
+
+        distance_call = self._get_distance_call(barrier.distance_m)
+        if distance_call:
+            parts.append(distance_call)
+
+        # Map barrier types to callout text
+        if barrier.barrier_type == "cattle_grid":
+            parts.append("cattle grid")
+        elif barrier.barrier_type == "gate":
+            parts.append("gate")
+        else:
+            return None  # Unknown barrier type
+
+        text = " ".join(parts)
+        unique_key = f"barrier_{barrier.node_id}_{bracket}"
+
+        return Pacenote(
+            text=text,
+            distance_m=barrier.distance_m,
+            note_type=NoteType.BARRIER,
+            priority=3,  # Safety - need to slow down
+            unique_key=unique_key,
+        )
+
+    def _narrow_to_note(self, narrow: NarrowInfo) -> Optional[Pacenote]:
+        """Convert a narrow section to a pacenote."""
+        # Multi-callout: include distance bracket in unique key
+        bracket = self._get_distance_bracket(narrow.distance_m)
+        if bracket is None:
+            return None
+
+        parts = []
+
+        distance_call = self._get_distance_call(narrow.distance_m)
+        if distance_call:
+            parts.append(distance_call)
+
+        parts.append("narrows")
+
+        text = " ".join(parts)
+        unique_key = f"narrow_{narrow.way_id}_{bracket}"
+
+        return Pacenote(
+            text=text,
+            distance_m=narrow.distance_m,
+            note_type=NoteType.NARROW,
+            priority=4,  # Informational but important
+            unique_key=unique_key,
+        )

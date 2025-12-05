@@ -67,6 +67,10 @@ class JanneSampleLibrary:
         "onto_gravel": "detail_onto_gravel",
         "onto_tarmac": "detail_onto_tarmac",
         "onto_concrete": "detail_onto_concrete",
+        # Barriers and narrows
+        "cattle_grid": "detail_cattle_grid",
+        "gate": "detail_gate",
+        "narrows": "detail_narrows",
     }
 
     NUMBER_MAP = {
@@ -446,6 +450,20 @@ class AudioPlayer:
             if parts[i] == "bumps":
                 keys.append("bumps")
                 i += 1
+                continue
+            if parts[i] == "narrows":
+                keys.append("narrows")
+                i += 1
+                continue
+            if parts[i] == "gate":
+                keys.append("gate")
+                i += 1
+                continue
+
+            # "cattle grid" (two words)
+            if parts[i] == "cattle" and i + 1 < len(parts) and parts[i + 1] == "grid":
+                keys.append("cattle_grid")
+                i += 2
                 continue
 
             # Skip unknown words

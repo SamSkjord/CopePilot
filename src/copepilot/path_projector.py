@@ -36,6 +36,8 @@ class ProjectedPath:
     fords: List["FordInfo"] = field(default_factory=list)
     speed_bumps: List["SpeedBumpInfo"] = field(default_factory=list)
     surface_changes: List["SurfaceChangeInfo"] = field(default_factory=list)
+    barriers: List["BarrierInfo"] = field(default_factory=list)
+    narrows: List["NarrowInfo"] = field(default_factory=list)
     total_distance: float = 0.0
 
 
@@ -106,6 +108,26 @@ class SurfaceChangeInfo:
     from_surface: str
     to_surface: str
     way_id: int
+
+
+@dataclass
+class BarrierInfo:
+    """Information about an upcoming barrier (cattle grid, gate)."""
+    lat: float
+    lon: float
+    distance_m: float
+    node_id: int
+    barrier_type: str  # cattle_grid, gate
+
+
+@dataclass
+class NarrowInfo:
+    """Information about an upcoming narrow section."""
+    lat: float
+    lon: float
+    distance_m: float
+    way_id: int
+    width: float  # Road width in meters, 0 if just tagged narrow
 
 
 class PathProjector:
@@ -217,6 +239,8 @@ class PathProjector:
         fords: List[FordInfo] = []
         speed_bumps: List[SpeedBumpInfo] = []
         surface_changes: List[SurfaceChangeInfo] = []
+        barriers: List[BarrierInfo] = []
+        narrows: List[NarrowInfo] = []
         total_distance = 0.0
 
         # Start from current position
@@ -226,7 +250,10 @@ class PathProjector:
         visited_fords = set()
         visited_speed_bumps = set()
         visited_railway_crossings = set()
+        visited_barriers = set()
+        visited_narrows = set()
         current_surface = ""  # Track for surface change detection
+        current_width = 0.0  # Track for narrow detection
 
         while total_distance < max_distance:
             way = self.network.ways.get(way_id)
@@ -294,6 +321,18 @@ class PathProjector:
                     ))
                 current_surface = way.surface
 
+            # Narrow section detection (width < 3m or explicit narrow tag)
+            is_narrow = way.narrow or (way.width > 0 and way.width < 3.0)
+            if is_narrow and way_id not in visited_narrows:
+                visited_narrows.add(way_id)
+                narrows.append(NarrowInfo(
+                    lat=feature_pt[0],
+                    lon=feature_pt[1],
+                    distance_m=total_distance,
+                    way_id=way_id,
+                    width=way.width,
+                ))
+
             # Add points along this way
             if forward:
                 indices = range(node_idx, len(way.nodes))
@@ -331,6 +370,18 @@ class PathProjector:
                         lon=crossing.lon,
                         distance_m=total_distance,
                         node_id=node_id,
+                    ))
+
+                # Check for barrier (cattle grid, gate) at this node
+                if node_id in self.network.barriers and node_id not in visited_barriers:
+                    visited_barriers.add(node_id)
+                    barrier = self.network.barriers[node_id]
+                    barriers.append(BarrierInfo(
+                        lat=barrier.lat,
+                        lon=barrier.lon,
+                        distance_m=total_distance,
+                        node_id=node_id,
+                        barrier_type=barrier.barrier_type,
                     ))
 
                 prev_point = pt
@@ -419,6 +470,8 @@ class PathProjector:
             fords=fords,
             speed_bumps=speed_bumps,
             surface_changes=surface_changes,
+            barriers=barriers,
+            narrows=narrows,
             total_distance=total_distance,
         )
 

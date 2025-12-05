@@ -38,6 +38,8 @@ class Way:
     surface: str = ""  # asphalt, gravel, concrete, etc.
     ford: bool = False
     traffic_calming: str = ""  # bump, hump, table, etc.
+    width: float = 0.0  # Road width in meters, 0 if unknown
+    narrow: bool = False  # Explicit narrow tag
 
 
 @dataclass
@@ -59,6 +61,15 @@ class RailwayCrossing:
 
 
 @dataclass
+class Barrier:
+    """A barrier on the road (cattle grid, gate, etc.)."""
+    node_id: int
+    lat: float
+    lon: float
+    barrier_type: str  # cattle_grid, gate, etc.
+
+
+@dataclass
 class RoadNetwork:
     """Cached road network for a geographic area."""
     nodes: Dict[int, Node] = field(default_factory=dict)
@@ -68,6 +79,8 @@ class RoadNetwork:
     node_to_ways: Dict[int, List[int]] = field(default_factory=dict)
     # Railway level crossings
     railway_crossings: Dict[int, RailwayCrossing] = field(default_factory=dict)
+    # Barriers (cattle grids, gates, etc.)
+    barriers: Dict[int, Barrier] = field(default_factory=dict)
 
     def get_way_geometry(self, way_id: int) -> List[Tuple[float, float]]:
         """Get list of (lat, lon) points for a way."""
@@ -108,6 +121,7 @@ class PBFRoadHandler(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
         self.ways: Dict[int, Way] = {}
         self.needed_nodes: Set[int] = set()
         self.railway_crossings: Dict[int, RailwayCrossing] = {}
+        self.barriers: Dict[int, Barrier] = {}
 
     def _in_bounds(self, lat: float, lon: float) -> bool:
         """Check if point is within our bounds."""
@@ -134,6 +148,8 @@ class PBFRoadHandler(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
         surface = tags.get("surface", "")
         ford = tags.get("ford", "no") not in ("no", "")
         traffic_calming = tags.get("traffic_calming", "")
+        width = self._parse_width(tags.get("width", ""))
+        narrow = tags.get("narrow", "no") not in ("no", "")
 
         self.ways[w.id] = Way(
             id=w.id,
@@ -147,6 +163,8 @@ class PBFRoadHandler(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
             surface=surface,
             ford=ford,
             traffic_calming=traffic_calming,
+            width=width,
+            narrow=narrow,
         )
         self.needed_nodes.update(node_refs)
 
@@ -158,13 +176,25 @@ class PBFRoadHandler(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
                 lat=n.location.lat,
                 lon=n.location.lon,
             )
-            # Check for railway level crossing
+            # Check for special node types
             tags = {tag.k: tag.v for tag in n.tags}
+
+            # Railway level crossing
             if tags.get("railway") == "level_crossing":
                 self.railway_crossings[n.id] = RailwayCrossing(
                     node_id=n.id,
                     lat=n.location.lat,
                     lon=n.location.lon,
+                )
+
+            # Barriers (cattle grids, gates)
+            barrier_type = tags.get("barrier", "")
+            if barrier_type in ("cattle_grid", "gate"):
+                self.barriers[n.id] = Barrier(
+                    node_id=n.id,
+                    lat=n.location.lat,
+                    lon=n.location.lon,
+                    barrier_type=barrier_type,
                 )
 
     def _parse_speed_limit(self, value: str) -> int:
@@ -177,6 +207,17 @@ class PBFRoadHandler(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
             return int(value)
         except ValueError:
             return 0
+
+    def _parse_width(self, value: str) -> float:
+        """Parse OSM width tag to meters."""
+        if not value:
+            return 0.0
+        try:
+            # Handle common formats: "3", "3.5", "3 m", "3.5m"
+            value = value.lower().replace("m", "").strip()
+            return float(value)
+        except ValueError:
+            return 0.0
 
 
 class MapLoader:
@@ -269,6 +310,11 @@ class MapLoader:
             if nid in network.node_to_ways:
                 network.railway_crossings[nid] = crossing
 
+        # Copy barriers that are on roads we have
+        for nid, barrier in handler.barriers.items():
+            if nid in network.node_to_ways:
+                network.barriers[nid] = barrier
+
         return network
 
     def load_around(
@@ -333,6 +379,11 @@ class MapLoader:
         for nid in network.node_to_ways:
             if nid in full_network.railway_crossings:
                 network.railway_crossings[nid] = full_network.railway_crossings[nid]
+
+        # Copy barriers that are on our roads
+        for nid in network.node_to_ways:
+            if nid in full_network.barriers:
+                network.barriers[nid] = full_network.barriers[nid]
 
         # Cache query result
         self._query_cache = network
