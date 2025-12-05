@@ -2,9 +2,10 @@
 """Download and cache OSM county extracts from Geofabrik.
 
 Usage:
-    python3 split_tiles.py                          # List available UK regions
-    python3 split_tiles.py gloucestershire          # Download and cache one region
-    python3 split_tiles.py gloucestershire bristol  # Download multiple regions
+    python3 download_regions.py                          # List available UK regions
+    python3 download_regions.py gloucestershire          # Download and cache one region
+    python3 download_regions.py gloucestershire bristol  # Download multiple regions
+    python3 download_regions.py --all                    # Download ALL UK regions
 
 Downloads from Geofabrik's pre-made county extracts (much faster than splitting).
 See: https://download.geofabrik.de/europe/united-kingdom/england.html
@@ -137,6 +138,10 @@ def main():
         help="Region names to download (e.g., gloucestershire bristol)"
     )
     parser.add_argument(
+        "--all", action="store_true",
+        help="Download all UK regions"
+    )
+    parser.add_argument(
         "--list", action="store_true",
         help="List available regions"
     )
@@ -150,20 +155,27 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.list or not args.regions:
+    if args.list or (not args.regions and not args.all):
         print("Available UK regions:")
         print("=" * 40)
         for name in sorted(UK_REGIONS.keys()):
             print(f"  {name}")
         print()
-        print("Usage: python3 split_tiles.py gloucestershire somerset")
+        print(f"Total: {len(UK_REGIONS)} regions")
+        print()
+        print("Usage:")
+        print("  python3 download_regions.py gloucestershire somerset")
+        print("  python3 download_regions.py --all")
         return
+
+    # Get list of regions to download
+    regions = list(UK_REGIONS.keys()) if args.all else args.regions
 
     args.output_dir.mkdir(exist_ok=True)
 
-    print(f"Downloading {len(args.regions)} region(s) to {args.output_dir}/\n")
+    print(f"Downloading {len(regions)} region(s) to {args.output_dir}/\n")
 
-    for region in args.regions:
+    for region in regions:
         pbf_path = download_region(region.lower(), args.output_dir)
         if pbf_path and not args.download_only:
             generate_pickle(pbf_path)
