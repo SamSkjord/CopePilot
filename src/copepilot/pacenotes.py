@@ -185,28 +185,38 @@ class PacenoteGenerator:
         # Sort by distance
         notes.sort(key=lambda n: n.distance_m)
 
-        # Filter out long-distance corner callouts if there's something between us and the corner
-        # (except for things within merge distance which will be combined with "into")
-        notes = self._filter_blocked_corners(notes)
+        # Filter out long-distance corner callouts if there's a closer corner
+        # Pass all detected corners so we can check corners that aren't in brackets yet
+        notes = self._filter_blocked_corners(notes, corners)
 
         # Merge adjacent notes that are within MERGE_DISTANCE_M of each other
         notes = self._merge_adjacent_notes(notes)
 
         return notes
 
-    def _filter_blocked_corners(self, notes: List[Pacenote]) -> List[Pacenote]:
+    def _filter_blocked_corners(
+        self, notes: List[Pacenote], all_corners: List[Corner]
+    ) -> List[Pacenote]:
         """
-        Remove long-distance corner callouts if there's something between us and the corner.
+        Remove long-distance corner callouts if there's a closer corner.
 
-        Corners at 1000m or 500m brackets should only be called if they're the first thing
-        ahead, or if everything before them is within merge distance (will be "into" chained).
+        Corners at 500m or 1000m brackets should only be called if there's no
+        closer corner outside merge distance. This checks ALL detected corners,
+        not just ones in brackets, to prevent calling a corner at 900m when
+        there's another corner at 300m (which isn't in a bracket yet).
+
+        100m bracket corners always pass through - they're close enough that
+        you need to hear about all of them.
         """
-        if len(notes) < 2:
+        if not notes:
             return notes
 
+        # Get all corner distances for blocking checks
+        corner_distances = sorted([c.entry_distance for c in all_corners])
+
         filtered = []
-        for i, note in enumerate(notes):
-            # Only filter corners at long-distance brackets (1000 or 500)
+        for note in notes:
+            # Only filter corners at long-distance brackets (500 or 1000)
             if note.note_type != NoteType.CORNER:
                 filtered.append(note)
                 continue
@@ -216,13 +226,15 @@ class PacenoteGenerator:
                 filtered.append(note)
                 continue
 
-            # Check if there's anything closer that's outside merge distance
+            # Check if there's ANY closer corner outside merge distance
+            # This includes corners not in brackets yet
             blocked = False
-            for j in range(i):  # All notes before this one (closer to us)
-                closer_note = notes[j]
-                distance_gap = note.distance_m - closer_note.distance_m
+            for corner_dist in corner_distances:
+                if corner_dist >= note.distance_m:
+                    break  # No more closer corners
+                distance_gap = note.distance_m - corner_dist
                 if distance_gap > self.MERGE_DISTANCE_M:
-                    # Something is between us and this corner, outside merge range
+                    # A closer corner exists outside merge range
                     blocked = True
                     break
 
