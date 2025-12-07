@@ -144,6 +144,9 @@ def calculate_curvature(
 
 def cumulative_distances(points: List[Tuple[float, float]]) -> List[float]:
     """Calculate cumulative distance along a list of points."""
+    if not points:
+        return []
+
     distances = [0.0]
     for i in range(1, len(points)):
         d = haversine_distance(
