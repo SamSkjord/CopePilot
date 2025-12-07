@@ -20,4 +20,7 @@ ENV/
 
 # Large map files
 assets/*.osm.pbf
-assets/gloucestershire-251127.osm.roads.pkl
+assets/*.roads.pkl
+assets/*.roads.db
+assets/*.roads.db-shm
+assets/*.roads.db-wal
