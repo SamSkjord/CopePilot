@@ -21,7 +21,7 @@ python3 -m src.copepilot.main --simulate 51.46,-2.46,0 --no-audio
 ```
 GPS/Simulator → MapLoader → PathProjector → CornerDetector → PacenoteGenerator → AudioPlayer
                     ↓
-              RoadNetwork (cached in .pkl file)
+              RoadNetwork (SQLite cache with R-tree spatial index)
 ```
 
 ### Key Components
@@ -30,7 +30,8 @@ GPS/Simulator → MapLoader → PathProjector → CornerDetector → PacenoteGen
 |------|---------|
 | `main.py` | Main loop, coordinates all components |
 | `simulator.py` | GPS simulation (GPSSimulator, VBOSimulator) |
-| `map_loader.py` | OSM PBF parsing with pickle caching |
+| `map_loader.py` | OSM PBF parsing with SQLite/pickle caching |
+| `sqlite_cache.py` | SQLite-based map cache with R-tree index |
 | `path_projector.py` | Projects path ahead from current position |
 | `corners.py` | ASC algorithm for corner detection |
 | `pacenotes.py` | Generates callout text with distances |
@@ -40,7 +41,7 @@ GPS/Simulator → MapLoader → PathProjector → CornerDetector → PacenoteGen
 ## Data Flow
 
 1. `GPSSimulator.read_position()` returns current lat/lon/heading
-2. `MapLoader.load_around()` loads roads from cached pickle (or parses PBF first time)
+2. `MapLoader.load_around()` queries roads from SQLite cache using R-tree spatial index
 3. `PathProjector.project_path()` traces path ahead, returns points + junctions + road features
 4. `CornerDetector.detect_corners()` finds corners in path geometry
 5. `PacenoteGenerator.generate()` creates callouts with distances and multi-callout support
@@ -48,10 +49,30 @@ GPS/Simulator → MapLoader → PathProjector → CornerDetector → PacenoteGen
 
 ## Important Files
 
-- `assets/gloucestershire-251127.osm.pbf` - OSM map data
-- `assets/gloucestershire-251127.osm.roads.pkl` - Cached road network (auto-generated)
+- `assets/*.osm.pbf` - OSM map data (source)
+- `assets/*.roads.db` - SQLite cache (auto-generated, preferred)
+- `assets/*.roads.pkl` - Pickle cache (legacy, still supported)
 - `assets/codriver_Janne Laahanen/` - Audio samples (MIT licence, see Credits)
 - `src/copepilot/config.py` - Configuration constants
+
+## Map Caching
+
+The system uses SQLite for scalable map caching:
+
+```bash
+# Generate SQLite cache from PBF (streaming, low RAM)
+python3 assets/generate_cache.py region.osm.pbf
+
+# Download UK county extracts from Geofabrik
+python3 assets/download_regions.py gloucestershire somerset
+python3 assets/download_regions.py --all  # All UK regions
+```
+
+Benefits of SQLite over pickle:
+- **Streaming import**: Minimal RAM usage (~100MB vs 20GB for UK)
+- **Spatial queries**: R-tree index for fast viewport loading
+- **Smaller files**: ~50-70% of pickle size
+- **Multi-region**: Load overlapping counties without duplication
 
 ## Testing
 
@@ -102,8 +123,9 @@ player.stop()
 - Audio queue also drains all pending items to catch late arrivals
 
 ### PBF loading slow
-- Road network is now cached to pickle file after first extraction
-- Cache rebuilds automatically if PBF is newer
+- Road network is cached to SQLite database with R-tree spatial index
+- Streaming import uses minimal RAM (vs 20GB+ for pickle with large regions)
+- Use `generate_cache.py` to pre-generate caches before deployment
 
 ## Rally Terminology
 

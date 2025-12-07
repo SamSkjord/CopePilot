@@ -1,4 +1,15 @@
-"""Load road network from OSM PBF file."""
+"""Load road network from OSM PBF file or SQLite cache.
+
+Supports three storage backends:
+1. SQLite cache (.roads.db) - Preferred, scalable, fast spatial queries
+2. Pickle cache (.roads.pkl) - Legacy, loads entire region into memory
+3. OSM PBF file (.osm.pbf) - Source format, auto-converted to cache
+
+For large regions (country/county level), use SQLite which:
+- Streams PBF import without loading everything in RAM
+- Uses R-tree spatial index for fast bbox queries
+- Supports efficient multi-region loading
+"""
 
 import math
 import os
@@ -14,6 +25,7 @@ except ImportError:
     OSMIUM_AVAILABLE = False
 
 from .geometry import haversine_distance, bearing
+from .sqlite_cache import SQLiteMapCache, RoadNetwork as SQLiteRoadNetwork
 
 
 @dataclass
@@ -221,79 +233,140 @@ class PBFRoadHandler(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
 
 
 class MapLoader:
-    """Load and query road network from pickle cache or OSM PBF file.
+    """Load and query road network from SQLite cache, pickle cache, or OSM PBF file.
 
-    Supports three modes:
-    1. Single file: specific .roads.pkl or .osm.pbf
-    2. Directory with single map: finds .roads.pkl or .osm.pbf
-    3. Tile mode: directory with tile_*.roads.pkl files (loads tiles on demand)
+    Supports multiple modes:
+    1. SQLite (.roads.db) - Preferred for large regions, efficient spatial queries
+    2. Pickle (.roads.pkl) - Legacy format, loads entire region into memory
+    3. PBF source (.osm.pbf) - Auto-converted to SQLite cache on first use
+    4. Multi-region: Directory with multiple .roads.db files (boundary preloading)
 
-    Tile mode enables large regions by loading only nearby tiles.
-    To update maps: replace .pkl files, or delete and add new .pbf
+    For new deployments, use generate_cache.py to create SQLite caches.
     """
 
-    # Tile settings
+    # Tile settings (for legacy pickle mode)
     TILE_SIZE = 0.5  # degrees, must match split_tiles.py
     MAX_LOADED_TILES = 4  # Maximum tiles to keep in memory
 
-    def __init__(self, map_path: Path):
+    def __init__(self, map_path: Path, prefer_sqlite: bool = True):
+        """
+        Initialize map loader.
+
+        Args:
+            map_path: Path to map file or directory containing map files
+            prefer_sqlite: If True, prefer SQLite over pickle when both exist
+        """
         self.map_path = Path(map_path)
+        self._prefer_sqlite = prefer_sqlite
         self._pkl_file: Optional[Path] = None
         self._pbf_file: Optional[Path] = None
+        self._db_file: Optional[Path] = None
+        self._sqlite_cache: Optional[SQLiteMapCache] = None
         self._full_network: Optional[RoadNetwork] = None
         self._query_cache: Optional[RoadNetwork] = None
         self._query_cache_center: Optional[Tuple[float, float]] = None
         self._query_cache_radius: float = 0
 
-        # Tile mode
+        # Tile/multi-region mode
         self._tile_mode = False
         self._tile_dir: Optional[Path] = None
         self._tile_cache: Dict[str, RoadNetwork] = {}  # tile_name -> network
         self._tile_access_order: List[str] = []  # LRU tracking
+        self._sqlite_caches: Dict[str, SQLiteMapCache] = {}  # region -> cache
 
         # Find map files
         self._find_map_files()
 
     def _find_map_files(self) -> None:
-        """Find pickle cache and/or PBF file, or detect multi-file mode."""
+        """Find SQLite cache, pickle cache, and/or PBF file, or detect multi-file mode."""
         if self.map_path.is_dir():
-            # Look for pickle files
+            # Look for cache files
+            dbs = list(self.map_path.glob("*.roads.db"))
             pkls = list(self.map_path.glob("*.roads.pkl"))
             pbfs = list(self.map_path.glob("*.osm.pbf"))
 
-            if len(pkls) > 1:
-                # Multi-file mode: multiple county/region pickles
+            if len(dbs) > 1 or len(pkls) > 1:
+                # Multi-file mode: multiple county/region caches
                 self._tile_mode = True
                 self._tile_dir = self.map_path
-                print(f"  Multi-region mode: found {len(pkls)} map files")
-                # Build bounds index
-                self._build_region_index(pkls)
+                cache_count = max(len(dbs), len(pkls))
+                print(f"  Multi-region mode: found {cache_count} map files")
+                # Build bounds index (prefer SQLite)
+                if dbs:
+                    self._build_sqlite_region_index(dbs)
+                else:
+                    self._build_region_index(pkls)
                 return
 
-            if pkls:
-                # Single pickle file
+            # Single file mode
+            if dbs and self._prefer_sqlite:
+                self._db_file = dbs[0]
+            elif pkls:
                 self._pkl_file = pkls[0]
+            elif dbs:
+                self._db_file = dbs[0]
             if pbfs:
-                # Use most recent PBF
                 self._pbf_file = max(pbfs, key=lambda p: p.stat().st_mtime)
         else:
             # Specific file provided
-            if self.map_path.suffix == ".pkl" or str(self.map_path).endswith(".roads.pkl"):
+            if str(self.map_path).endswith(".roads.db"):
+                self._db_file = self.map_path
+            elif self.map_path.suffix == ".pkl" or str(self.map_path).endswith(".roads.pkl"):
                 self._pkl_file = self.map_path
             elif self.map_path.suffix == ".pbf":
                 self._pbf_file = self.map_path
-                # Check for matching pickle
-                pkl_path = self.map_path.with_suffix(".roads.pkl")
-                if pkl_path.exists():
+                # Check for matching caches (prefer SQLite)
+                db_path = Path(str(self.map_path).replace(".osm.pbf", ".roads.db"))
+                pkl_path = Path(str(self.map_path).replace(".osm.pbf", ".roads.pkl"))
+                if db_path.exists() and self._prefer_sqlite:
+                    self._db_file = db_path
+                elif pkl_path.exists():
                     self._pkl_file = pkl_path
+                elif db_path.exists():
+                    self._db_file = db_path
+
+    # Distance threshold for preloading adjacent regions (meters)
+    BOUNDARY_PRELOAD_DISTANCE_M = 5000
+
+    def _build_sqlite_region_index(self, db_files: List[Path]) -> None:
+        """Build index of region bounds from SQLite caches (fast - just reads metadata)."""
+        self._region_bounds: Dict[str, Tuple[float, float, float, float]] = {}
+        self._use_sqlite_regions = True
+
+        print(f"  Building region index from {len(db_files)} SQLite caches...")
+        for db_path in db_files:
+            try:
+                cache = SQLiteMapCache(db_path)
+                bounds = cache.get_bounds()
+                if bounds:
+                    region_name = db_path.stem.replace(".roads", "")
+                    self._region_bounds[region_name] = bounds
+                    # Keep cache open for later use
+                    self._sqlite_caches[region_name] = cache
+            except Exception as e:
+                print(f"    Warning: {db_path.name}: {e}")
+
+        print(f"  Indexed {len(self._region_bounds)} regions")
 
     def _build_region_index(self, pkl_files: List[Path]) -> None:
-        """Build index of region bounds from pickle files."""
+        """Build or load index of region bounds."""
         self._region_bounds: Dict[str, Tuple[float, float, float, float]] = {}
+        index_file = self._tile_dir / "regions.index.pkl"
 
+        # Try loading existing index
+        if index_file.exists():
+            try:
+                with open(index_file, "rb") as f:
+                    self._region_bounds = pickle.load(f)
+                print(f"  Loaded index: {len(self._region_bounds)} regions")
+                return
+            except Exception:
+                pass  # Rebuild if corrupt
+
+        # Build index by scanning each pickle (one-time cost)
+        print(f"  Building region index (one-time)...")
         for pkl_path in pkl_files:
             try:
-                # Quick scan to get bounds (min_lat, min_lon, max_lat, max_lon)
                 with open(pkl_path, "rb") as f:
                     network = pickle.load(f)
 
@@ -304,22 +377,56 @@ class MapLoader:
                 lons = [n.lon for n in network.nodes.values()]
                 bounds = (min(lats), min(lons), max(lats), max(lons))
                 self._region_bounds[pkl_path.stem] = bounds
-
-                # Don't keep in memory - will load on demand
                 del network
 
             except Exception as e:
-                print(f"  Warning: Could not index {pkl_path.name}: {e}")
+                print(f"    Warning: {pkl_path.name}: {e}")
 
-        print(f"  Indexed {len(self._region_bounds)} regions")
+        # Save index for next time
+        try:
+            with open(index_file, "wb") as f:
+                pickle.dump(self._region_bounds, f)
+            print(f"  Saved index: {len(self._region_bounds)} regions")
+        except Exception as e:
+            print(f"  Warning: Could not save index: {e}")
 
-    def _find_regions_for_position(self, lat: float, lon: float) -> List[str]:
-        """Find region names that contain the given position."""
-        matching = []
+    def _find_regions_for_position(
+        self, lat: float, lon: float, include_nearby: bool = True
+    ) -> List[str]:
+        """Find regions containing position, plus nearby regions for preloading."""
+        containing = []
+        nearby = []
+
         for name, (min_lat, min_lon, max_lat, max_lon) in self._region_bounds.items():
+            # Check if position is inside region
             if min_lat <= lat <= max_lat and min_lon <= lon <= max_lon:
-                matching.append(name)
-        return matching
+                containing.append(name)
+            elif include_nearby:
+                # Check distance to region boundary for preloading
+                dist = self._distance_to_bounds(lat, lon, min_lat, min_lon, max_lat, max_lon)
+                if dist < self.BOUNDARY_PRELOAD_DISTANCE_M:
+                    nearby.append(name)
+
+        # Return containing regions first, then nearby
+        return containing + nearby
+
+    def _distance_to_bounds(
+        self, lat: float, lon: float,
+        min_lat: float, min_lon: float, max_lat: float, max_lon: float
+    ) -> float:
+        """Calculate approximate distance from point to bounding box edge."""
+        # If inside, distance is 0
+        if min_lat <= lat <= max_lat and min_lon <= lon <= max_lon:
+            return 0
+
+        # Find nearest point on bbox
+        nearest_lat = max(min_lat, min(lat, max_lat))
+        nearest_lon = max(min_lon, min(lon, max_lon))
+
+        # Approximate distance in meters
+        lat_diff = abs(lat - nearest_lat) * 111000
+        lon_diff = abs(lon - nearest_lon) * 111000 * math.cos(math.radians(lat))
+        return math.sqrt(lat_diff ** 2 + lon_diff ** 2)
 
     def _get_tile_name(self, lat: float, lon: float) -> str:
         """Get tile name for a position."""
@@ -465,17 +572,83 @@ class MapLoader:
         self._query_cache_center = (lat, lon)
         self._query_cache_radius = radius_m
 
-        loaded_tiles = [t for t in needed_tiles if t in self._tile_cache]
-        print(f"Loaded {len(network.ways)} roads from {len(loaded_tiles)} tiles")
+        loaded_regions = [r for r in needed_regions if r in self._tile_cache]
+        print(f"  Loaded {len(network.ways)} roads from {len(loaded_regions)} region(s)")
 
         return network
 
+    def _load_around_sqlite_regions(
+        self, lat: float, lon: float, radius_m: float
+    ) -> RoadNetwork:
+        """Load road network from SQLite region caches around a point."""
+        # Find regions that contain this position
+        needed_regions = self._find_regions_for_position(lat, lon)
+        if not needed_regions:
+            print(f"  Warning: No region contains {lat:.2f}, {lon:.2f}")
+            return RoadNetwork()
+
+        # Load and merge from each region's SQLite cache
+        merged = RoadNetwork()
+        for region_name in needed_regions:
+            if region_name not in self._sqlite_caches:
+                continue
+            cache = self._sqlite_caches[region_name]
+            sqlite_network = cache.load_region(lat, lon, radius_m)
+            region_network = self._convert_sqlite_network(sqlite_network)
+
+            # Merge into result
+            merged.nodes.update(region_network.nodes)
+            merged.ways.update(region_network.ways)
+            merged.junctions.update(region_network.junctions)
+            merged.railway_crossings.update(region_network.railway_crossings)
+            merged.barriers.update(region_network.barriers)
+            for nid, way_ids in region_network.node_to_ways.items():
+                if nid not in merged.node_to_ways:
+                    merged.node_to_ways[nid] = []
+                for wid in way_ids:
+                    if wid not in merged.node_to_ways[nid]:
+                        merged.node_to_ways[nid].append(wid)
+
+        # Cache result
+        self._query_cache = merged
+        self._query_cache_center = (lat, lon)
+        self._query_cache_radius = radius_m
+
+        print(f"  Loaded {len(merged.ways)} roads from {len(needed_regions)} region(s)")
+        return merged
+
     def _get_full_network(self) -> RoadNetwork:
-        """Get the full road network, loading from cache or PBF."""
+        """Get the full road network, loading from cache or PBF.
+
+        Note: For SQLite mode, this loads ALL data into memory.
+        Prefer using load_around() for efficient bbox queries.
+        """
         if self._full_network:
             return self._full_network
 
-        # Try loading from pickle cache first
+        # Try SQLite cache first (most efficient for large regions)
+        if self._db_file and self._db_file.exists():
+            try:
+                print(f"  Loading from SQLite cache {self._db_file.name}...")
+                if not self._sqlite_cache:
+                    self._sqlite_cache = SQLiteMapCache(self._db_file)
+                bounds = self._sqlite_cache.get_bounds()
+                if bounds:
+                    # Load entire region
+                    center_lat = (bounds[0] + bounds[2]) / 2
+                    center_lon = (bounds[1] + bounds[3]) / 2
+                    # Calculate radius to cover entire bounds
+                    lat_span = (bounds[2] - bounds[0]) * 111000
+                    lon_span = (bounds[3] - bounds[1]) * 111000 * math.cos(math.radians(center_lat))
+                    radius = max(lat_span, lon_span) / 2 * 1.5  # Add 50% margin
+                    sqlite_network = self._sqlite_cache.load_region(center_lat, center_lon, radius)
+                    self._full_network = self._convert_sqlite_network(sqlite_network)
+                    print(f"  Loaded {len(self._full_network.ways)} roads from SQLite")
+                    return self._full_network
+            except Exception as e:
+                print(f"  SQLite load failed: {e}")
+
+        # Try loading from pickle cache
         if self._pkl_file and self._pkl_file.exists():
             try:
                 print(f"  Loading cached roads from {self._pkl_file.name}...")
@@ -489,7 +662,7 @@ class MapLoader:
         # Fall back to extracting from PBF
         if not self._pbf_file or not self._pbf_file.exists():
             raise FileNotFoundError(
-                f"No map data found. Provide a .roads.pkl or .osm.pbf file."
+                f"No map data found. Provide a .roads.db, .roads.pkl, or .osm.pbf file."
             )
 
         if not OSMIUM_AVAILABLE:
@@ -498,10 +671,24 @@ class MapLoader:
             )
 
         print(f"  Extracting roads from {self._pbf_file.name}...")
+
+        # Create SQLite cache (preferred) or pickle cache
+        db_file = Path(str(self._pbf_file).replace(".osm.pbf", ".roads.db"))
+        try:
+            print(f"  Creating SQLite cache {db_file.name}...")
+            self._sqlite_cache = SQLiteMapCache(db_file)
+            self._sqlite_cache.import_from_pbf(self._pbf_file)
+            self._db_file = db_file
+            # Now load from SQLite
+            return self._get_full_network()
+        except Exception as e:
+            print(f"  SQLite cache creation failed: {e}")
+            print(f"  Falling back to pickle cache...")
+
         self._full_network = self._extract_all_roads()
 
-        # Save to cache (alongside PBF)
-        cache_file = self._pbf_file.with_suffix(".roads.pkl")
+        # Save to pickle cache (alongside PBF)
+        cache_file = Path(str(self._pbf_file).replace(".osm.pbf", ".roads.pkl"))
         try:
             print(f"  Saving cache to {cache_file.name}...")
             with open(cache_file, "wb") as f:
@@ -513,6 +700,64 @@ class MapLoader:
             print(f"  Warning: Could not save cache: {e}")
 
         return self._full_network
+
+    def _convert_sqlite_network(self, sqlite_network: SQLiteRoadNetwork) -> RoadNetwork:
+        """Convert SQLite RoadNetwork to local RoadNetwork type."""
+        network = RoadNetwork()
+
+        # Convert nodes
+        for nid, node in sqlite_network.nodes.items():
+            network.nodes[nid] = Node(node.id, node.lat, node.lon)
+
+        # Convert ways
+        for wid, way in sqlite_network.ways.items():
+            network.ways[wid] = Way(
+                id=way.id,
+                nodes=way.nodes,
+                name=way.name,
+                highway_type=way.highway_type,
+                oneway=way.oneway,
+                speed_limit=way.speed_limit,
+                bridge=way.bridge,
+                tunnel=way.tunnel,
+                surface=way.surface,
+                ford=way.ford,
+                traffic_calming=way.traffic_calming,
+                width=way.width,
+                narrow=way.narrow,
+            )
+
+        # Convert junctions
+        for jid, junction in sqlite_network.junctions.items():
+            network.junctions[jid] = Junction(
+                node_id=junction.node_id,
+                lat=junction.lat,
+                lon=junction.lon,
+                connected_ways=junction.connected_ways,
+                is_t_junction=junction.is_t_junction,
+            )
+
+        # Copy node_to_ways
+        network.node_to_ways = dict(sqlite_network.node_to_ways)
+
+        # Convert railway crossings
+        for rid, crossing in sqlite_network.railway_crossings.items():
+            network.railway_crossings[rid] = RailwayCrossing(
+                node_id=crossing.node_id,
+                lat=crossing.lat,
+                lon=crossing.lon,
+            )
+
+        # Convert barriers
+        for bid, barrier in sqlite_network.barriers.items():
+            network.barriers[bid] = Barrier(
+                node_id=barrier.node_id,
+                lat=barrier.lat,
+                lon=barrier.lon,
+                barrier_type=barrier.barrier_type,
+            )
+
+        return network
 
     def _extract_all_roads(self) -> RoadNetwork:
         """Extract all roads from the PBF file."""
@@ -571,6 +816,7 @@ class MapLoader:
         Load road network around a point.
 
         Uses caching - if we already have data covering this area, returns cache.
+        SQLite mode uses efficient spatial queries.
         In tile mode, loads tiles on demand.
         """
         # Check if query cache covers this request
@@ -582,9 +828,24 @@ class MapLoader:
             if dist < self._query_cache_radius / 2:
                 return self._query_cache
 
-        # Tile mode: load nearby tiles
+        # Tile/multi-region mode with SQLite
+        if self._tile_mode and hasattr(self, '_use_sqlite_regions') and self._use_sqlite_regions:
+            return self._load_around_sqlite_regions(lat, lon, radius_m)
+
+        # Tile mode with pickle (legacy)
         if self._tile_mode:
             return self._load_around_tiles(lat, lon, radius_m)
+
+        # Single SQLite cache - use efficient spatial query
+        if self._db_file and self._db_file.exists():
+            if not self._sqlite_cache:
+                self._sqlite_cache = SQLiteMapCache(self._db_file)
+            sqlite_network = self._sqlite_cache.load_region(lat, lon, radius_m)
+            network = self._convert_sqlite_network(sqlite_network)
+            self._query_cache = network
+            self._query_cache_center = (lat, lon)
+            self._query_cache_radius = radius_m
+            return network
 
         # Get full network (from cache or PBF)
         full_network = self._get_full_network()

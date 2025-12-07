@@ -104,26 +104,33 @@ def download_region(name: str, output_dir: Path) -> Path:
         return None
 
 
-def generate_pickle(pbf_path: Path) -> Path:
-    """Generate pickle cache for a PBF file."""
-    pkl_path = pbf_path.with_suffix(".roads.pkl")
-    if pkl_path.exists():
+def generate_cache(pbf_path: Path) -> Path:
+    """Generate SQLite cache for a PBF file."""
+    db_path = Path(str(pbf_path).replace(".osm.pbf", ".roads.db"))
+    if db_path.exists():
         print(f"  {pbf_path.stem}: cache exists")
-        return pkl_path
+        return db_path
 
-    print(f"  Generating cache for {pbf_path.name}...")
+    print(f"  Generating SQLite cache for {pbf_path.name}...")
 
     # Import here to avoid circular deps
     sys.path.insert(0, str(Path(__file__).parent.parent))
-    from src.copepilot.map_loader import MapLoader
+    from src.copepilot.sqlite_cache import SQLiteMapCache
 
     try:
-        loader = MapLoader(pbf_path)
-        network = loader._get_full_network()
-        size_mb = pkl_path.stat().st_size / 1024 / 1024
-        print(f"    Created {pkl_path.name} ({size_mb:.1f} MB)")
-        print(f"    Roads: {len(network.ways):,}, Junctions: {len(network.junctions):,}")
-        return pkl_path
+        cache = SQLiteMapCache(db_path)
+        cache.import_from_pbf(pbf_path)
+
+        # Get stats
+        conn = cache._get_conn()
+        way_count = conn.execute("SELECT COUNT(*) FROM ways").fetchone()[0]
+        junction_count = conn.execute("SELECT COUNT(*) FROM junctions").fetchone()[0]
+
+        size_mb = db_path.stat().st_size / 1024 / 1024
+        print(f"    Created {db_path.name} ({size_mb:.1f} MB)")
+        print(f"    Roads: {way_count:,}, Junctions: {junction_count:,}")
+        cache.close()
+        return db_path
     except Exception as e:
         print(f"    Error: {e}")
         return None
@@ -178,10 +185,10 @@ def main():
     for region in regions:
         pbf_path = download_region(region.lower(), args.output_dir)
         if pbf_path and not args.download_only:
-            generate_pickle(pbf_path)
+            generate_cache(pbf_path)
         print()
 
-    print("Done! Copy .roads.pkl files to target device.")
+    print("Done! Copy .roads.db files to target device.")
     print("Multiple county caches in one directory will be loaded automatically.")
 
 

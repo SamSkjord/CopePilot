@@ -582,12 +582,19 @@ class CornerDetector:
             corner_length = seg.end_distance - seg.start_distance
             long_corner = corner_length > 50
 
+            # Extract lat/lon from point (supports tuples and PathPoint objects)
+            apex_point = points[apex_idx]
+            if hasattr(apex_point, 'lat'):
+                apex_lat, apex_lon = apex_point.lat, apex_point.lon
+            else:
+                apex_lat, apex_lon = apex_point[0], apex_point[1]
+
             corner = Corner(
                 entry_distance=seg.start_distance,
                 apex_distance=distances[apex_idx],
                 exit_distance=seg.end_distance,
-                apex_lat=points[apex_idx][0],
-                apex_lon=points[apex_idx][1],
+                apex_lat=apex_lat,
+                apex_lon=apex_lon,
                 direction=direction,
                 severity=severity,
                 total_angle=total_angle,

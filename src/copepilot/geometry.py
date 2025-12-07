@@ -1,7 +1,14 @@
 """Geometry utilities for GPS and road calculations."""
 
 import math
-from typing import Tuple, List
+from typing import Tuple, List, Union, Any
+
+
+def _get_lat_lon(point: Any) -> Tuple[float, float]:
+    """Extract lat/lon from a point (tuple or object with .lat/.lon)."""
+    if hasattr(point, 'lat') and hasattr(point, 'lon'):
+        return point.lat, point.lon
+    return point[0], point[1]
 
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -101,22 +108,28 @@ def closest_point_on_segment(
 
 
 def calculate_curvature(
-    p1: Tuple[float, float],
-    p2: Tuple[float, float],
-    p3: Tuple[float, float],
+    p1: Any,
+    p2: Any,
+    p3: Any,
 ) -> float:
     """
     Calculate curvature at p2 using three-point circumcircle method.
 
+    Points can be (lat, lon) tuples or objects with .lat/.lon attributes.
     Returns curvature in 1/meters (signed: positive=left, negative=right).
     """
+    # Extract lat/lon from points (supports tuples and PathPoint objects)
+    lat1, lon1 = _get_lat_lon(p1)
+    lat2, lon2 = _get_lat_lon(p2)
+    lat3, lon3 = _get_lat_lon(p3)
+
     # Convert to approximate meters using p2 as origin
-    x1 = (p1[1] - p2[1]) * 111320 * math.cos(math.radians(p2[0]))
-    y1 = (p1[0] - p2[0]) * 110540
+    x1 = (lon1 - lon2) * 111320 * math.cos(math.radians(lat2))
+    y1 = (lat1 - lat2) * 110540
     x2 = 0.0
     y2 = 0.0
-    x3 = (p3[1] - p2[1]) * 111320 * math.cos(math.radians(p2[0]))
-    y3 = (p3[0] - p2[0]) * 110540
+    x3 = (lon3 - lon2) * 111320 * math.cos(math.radians(lat2))
+    y3 = (lat3 - lat2) * 110540
 
     # Area of triangle
     area = abs((x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2)) / 2.0)
@@ -142,13 +155,15 @@ def calculate_curvature(
     return sign / radius
 
 
-def cumulative_distances(points: List[Tuple[float, float]]) -> List[float]:
-    """Calculate cumulative distance along a list of points."""
+def cumulative_distances(points: List[Any]) -> List[float]:
+    """Calculate cumulative distance along a list of points.
+
+    Points can be (lat, lon) tuples or objects with .lat/.lon attributes.
+    """
     distances = [0.0]
     for i in range(1, len(points)):
-        d = haversine_distance(
-            points[i - 1][0], points[i - 1][1],
-            points[i][0], points[i][1]
-        )
+        lat1, lon1 = _get_lat_lon(points[i - 1])
+        lat2, lon2 = _get_lat_lon(points[i])
+        d = haversine_distance(lat1, lon1, lat2, lon2)
         distances.append(distances[-1] + d)
     return distances
