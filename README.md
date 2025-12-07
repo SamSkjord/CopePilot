@@ -156,9 +156,18 @@ GPS ready, starting navigation...
 
 ## PBF Caching
 
-On first run, CopePilot extracts all roads from the PBF file and saves them to a pickle cache file (e.g., `gloucestershire-251127.osm.roads.pkl`). Subsequent runs load from this cache, which is much faster.
+On first run, CopePilot streams the PBF into a **SQLite cache** (e.g., `gloucestershire-251127.osm.roads.sqlite`) without holding the full graph in RAM. For smaller extracts it also writes a legacy `.roads.pkl` file; large country-scale extracts skip the pickle to avoid memory blow-ups. Subsequent runs read from the SQLite cache and only fall back if it is missing or stale.
 
-The cache is automatically rebuilt if the PBF file is newer than the cache.
+### Scalable cache options for Raspberry Pi
+
+For real-time, offline use on constrained hardware, the default `.roads.sqlite` cache keeps a single portable file with optional R-tree indices. The legacy pickle cache remains for compatibility. Other offline formats remain viable options when working with region- or country-scale PBFs:
+
+- **SQLite/SpatiaLite**: single portable file, WAL + R-tree indices for fast viewport queries, modest dependencies suitable for SBCs.
+- **PMTiles/MBTiles**: fully offline, read-only tile stores with predictable RAM/IO; require a tiling pipeline.
+- **GeoParquet + R-tree**: compact columnar storage with an external spatial index; good for write-once/read-many updates entirely on-device.
+- **PostGIS**: richest spatial features if you can run a local service on the Pi, but heavier on setup.
+
+See `docs/road_caching_options.md` for details and Raspberry Pi tuning notes.
 
 ## Corner Detection
 
