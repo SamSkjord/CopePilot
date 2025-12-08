@@ -5,7 +5,7 @@ from pathlib import Path
 # Paths
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 ASSETS_DIR = PROJECT_ROOT / "assets"
-MAP_FILE = ASSETS_DIR / "gloucestershire-251127.osm.pbf"
+MAP_FILE = ASSETS_DIR / "britain-and-ireland-251127.roads.db"
 
 # Lookahead and navigation
 LOOKAHEAD_DISTANCE_M = 1000  # How far ahead to analyze (meters)

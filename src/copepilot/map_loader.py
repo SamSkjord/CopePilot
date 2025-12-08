@@ -825,7 +825,8 @@ class MapLoader:
                 lat, lon,
                 self._query_cache_center[0], self._query_cache_center[1]
             )
-            if dist < self._query_cache_radius / 2:
+            # Cache valid if: close to center AND new radius fits in cached area
+            if dist < self._query_cache_radius / 2 and radius_m <= self._query_cache_radius:
                 return self._query_cache
 
         # Tile/multi-region mode with SQLite

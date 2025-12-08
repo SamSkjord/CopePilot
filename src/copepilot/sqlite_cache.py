@@ -296,7 +296,7 @@ class SQLiteMapCache:
         """)
         conn.commit()
 
-        print(f"  Pass 1: Extracting ways...")
+        print(f"  Pass 1: Extracting ways...", flush=True)
 
         # Pass 1: Extract ways
         way_handler = _WayExtractor(self.HIGHWAY_TYPES)
@@ -304,10 +304,10 @@ class SQLiteMapCache:
 
         ways = way_handler.ways
         needed_nodes = way_handler.needed_nodes
-        print(f"    Found {len(ways):,} roads, need {len(needed_nodes):,} nodes")
+        print(f"    Found {len(ways):,} roads, need {len(needed_nodes):,} nodes", flush=True)
 
         # Insert ways
-        print(f"  Inserting ways...")
+        print(f"  Inserting ways...", flush=True)
         conn.executemany("""
             INSERT INTO ways (id, name, highway_type, oneway, speed_limit,
                              bridge, tunnel, surface, ford, traffic_calming,
@@ -321,7 +321,7 @@ class SQLiteMapCache:
         ])
 
         # Insert way-node relationships
-        print(f"  Inserting way-node relationships...")
+        print(f"  Inserting way-node relationships...", flush=True)
         way_node_rows = []
         for way in ways.values():
             for idx, node_id in enumerate(way.nodes):
@@ -333,7 +333,7 @@ class SQLiteMapCache:
         conn.commit()
         del way_node_rows
 
-        print(f"  Pass 2: Extracting nodes...")
+        print(f"  Pass 2: Extracting nodes...", flush=True)
 
         # Pass 2: Extract needed nodes
         node_handler = _NodeExtractor(needed_nodes)
@@ -342,10 +342,10 @@ class SQLiteMapCache:
         nodes = node_handler.nodes
         railway_crossings = node_handler.railway_crossings
         barriers = node_handler.barriers
-        print(f"    Found {len(nodes):,} nodes, {len(railway_crossings):,} crossings, {len(barriers):,} barriers")
+        print(f"    Found {len(nodes):,} nodes, {len(railway_crossings):,} crossings, {len(barriers):,} barriers", flush=True)
 
         # Insert nodes and spatial index
-        print(f"  Inserting nodes with spatial index...")
+        print(f"  Inserting nodes with spatial index...", flush=True)
         conn.executemany(
             "INSERT INTO nodes (id, lat, lon) VALUES (?, ?, ?)",
             [(n.id, n.lat, n.lon) for n in nodes.values()]
@@ -380,7 +380,7 @@ class SQLiteMapCache:
         conn.commit()
 
         # Build junctions
-        print(f"  Computing junctions...")
+        print(f"  Computing junctions...", flush=True)
         self._build_junctions(nodes, ways)
 
         # Store import metadata
@@ -391,7 +391,7 @@ class SQLiteMapCache:
         )
         conn.commit()
 
-        print(f"  Import complete!")
+        print(f"  Import complete!", flush=True)
 
     def _build_junctions(self, nodes: Dict[int, Node], ways: Dict[int, Way]) -> None:
         """Build junction table from way data."""
@@ -427,7 +427,7 @@ class SQLiteMapCache:
             junction_ways
         )
         conn.commit()
-        print(f"    Found {len(junctions):,} junctions")
+        print(f"    Found {len(junctions):,} junctions", flush=True)
 
     def _is_t_junction(
         self,
@@ -670,8 +670,14 @@ class _WayExtractor(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
         self.highway_types = highway_types
         self.ways: Dict[int, Way] = {}
         self.needed_nodes: Set[int] = set()
+        self._way_count = 0
+        self._road_count = 0
 
     def way(self, w):
+        self._way_count += 1
+        if self._way_count % 500000 == 0:
+            print(f"    Scanned {self._way_count:,} ways, found {self._road_count:,} roads...", flush=True)
+
         tags = {tag.k: tag.v for tag in w.tags}
         highway = tags.get("highway", "")
 
@@ -707,6 +713,7 @@ class _WayExtractor(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
             narrow=narrow,
         )
         self.needed_nodes.update(node_refs)
+        self._road_count += 1
 
     def _parse_speed_limit(self, value: str) -> int:
         if not value:
@@ -738,10 +745,18 @@ class _NodeExtractor(osmium.SimpleHandler if OSMIUM_AVAILABLE else object):
         self.nodes: Dict[int, Node] = {}
         self.railway_crossings: Dict[int, RailwayCrossing] = {}
         self.barriers: Dict[int, Barrier] = {}
+        self._node_count = 0
+        self._found_count = 0
 
     def node(self, n):
+        self._node_count += 1
+        if self._node_count % 5000000 == 0:
+            print(f"    Scanned {self._node_count:,} nodes, found {self._found_count:,} needed...", flush=True)
+
         if n.id not in self.needed_nodes:
             return
+
+        self._found_count += 1
 
         self.nodes[n.id] = Node(
             id=n.id,
