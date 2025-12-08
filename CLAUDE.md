@@ -74,6 +74,19 @@ Benefits of SQLite over pickle:
 - **Smaller files**: ~50-70% of pickle size
 - **Multi-region**: Load overlapping counties without duplication
 
+### Performance (Britain & Ireland, 6.5GB cache)
+
+| Query Radius | Time | Roads |
+|--------------|------|-------|
+| 2km | 0.09s | 1,300 |
+| 5km | 0.44s | 8,700 |
+| 10km | 6.9s | 38,700 |
+
+Optimizations applied:
+- 100MB page cache + 1GB memory-mapped I/O
+- ANALYZE run after import for query planning
+- Batched way_node queries (avoids N+1 problem)
+
 ## Testing
 
 ```bash
