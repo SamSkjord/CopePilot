@@ -137,6 +137,10 @@ class SQLiteMapCache:
             # Enable WAL mode for better concurrent access and crash safety
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
+            # Performance optimizations for large read-heavy databases
+            self._conn.execute("PRAGMA cache_size=-100000")  # 100MB page cache
+            self._conn.execute("PRAGMA mmap_size=1073741824")  # 1GB memory-mapped I/O
+            self._conn.execute("PRAGMA temp_store=MEMORY")  # Temp tables in RAM
         return self._conn
 
     def _ensure_schema(self) -> None:
@@ -389,6 +393,11 @@ class SQLiteMapCache:
             "INSERT OR REPLACE INTO metadata (key, version) VALUES ('source_file', ?)",
             (str(pbf_path),)
         )
+        conn.commit()
+
+        # Optimize query planner with statistics
+        print(f"  Running ANALYZE for query optimization...", flush=True)
+        conn.execute("ANALYZE")
         conn.commit()
 
         print(f"  Import complete!", flush=True)
