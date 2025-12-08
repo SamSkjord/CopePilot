@@ -163,7 +163,8 @@ class CopePilot:
         print(f"Loading roads near {pos.lat:.4f}, {pos.lon:.4f}...")
 
         # Use larger radius in simulation mode to avoid refetching
-        radius = 10000 if self.simulation_mode else config.ROAD_FETCH_RADIUS_M
+        # 5km is enough for most routes and loads much faster than 10km
+        radius = 5000 if self.simulation_mode else config.ROAD_FETCH_RADIUS_M
 
         try:
             self._network = self.map_loader.load_around(

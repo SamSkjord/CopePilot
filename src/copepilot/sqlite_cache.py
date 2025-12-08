@@ -561,13 +561,26 @@ class SQLiteMapCache:
             """, chunk).fetchall()
             way_rows.extend(rows)
 
+        # Batch load all way_nodes at once (avoid N+1 queries)
+        way_node_map: Dict[int, List[Tuple[int, int]]] = {}  # way_id -> [(idx, node_id)]
+        for i in range(0, len(way_ids), chunk_size):
+            chunk = way_ids[i:i + chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+            wn_rows = conn.execute(f"""
+                SELECT way_id, idx, node_id FROM way_nodes
+                WHERE way_id IN ({placeholders})
+            """, chunk).fetchall()
+            for r in wn_rows:
+                if r['way_id'] not in way_node_map:
+                    way_node_map[r['way_id']] = []
+                way_node_map[r['way_id']].append((r['idx'], r['node_id']))
+
+        # Sort each way's nodes by idx and extract node_ids
+        for way_id in way_node_map:
+            way_node_map[way_id].sort(key=lambda x: x[0])
+
         for row in way_rows:
-            # Get node IDs for this way
-            wn_rows = conn.execute("""
-                SELECT node_id FROM way_nodes
-                WHERE way_id = ? ORDER BY idx
-            """, (row['id'],)).fetchall()
-            node_list = [r['node_id'] for r in wn_rows]
+            node_list = [n[1] for n in way_node_map.get(row['id'], [])]
 
             network.ways[row['id']] = Way(
                 id=row['id'],
