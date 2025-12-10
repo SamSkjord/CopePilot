@@ -51,6 +51,7 @@ class JunctionInfo:
     exit_bearings: List[float]  # Bearings of roads leaving junction
     straight_on_bearing: Optional[float]  # Which way is "straight on"
     node_id: int = 0  # Node ID for deduplication
+    turn_direction: Optional[str] = None  # "left", "right", "straight" when route-guided
 
 
 @dataclass
@@ -219,11 +220,19 @@ class PathProjector:
         lon: float,
         heading: float,
         max_distance: float = config.LOOKAHEAD_DISTANCE_M,
+        route_waypoints: Optional[List[Tuple[float, float]]] = None,
     ) -> Optional[ProjectedPath]:
         """
         Project the path ahead from current position.
 
-        Follows the current road, choosing "straight on" at junctions.
+        Follows the current road, choosing "straight on" at junctions unless
+        route_waypoints are provided, in which case follows the route direction.
+
+        Args:
+            lat, lon: Current position
+            heading: Current heading in degrees
+            max_distance: How far ahead to project
+            route_waypoints: Optional list of (lat, lon) from GPX route to guide direction
         """
         # Find current way
         current = self.find_current_way(lat, lon, heading)
@@ -407,11 +416,24 @@ class PathProjector:
                     end_node.lat, end_node.lon
                 )
 
-                # Find straight-on bearing
-                straight_bearing = self._find_straight_on(
-                    current_bearing, exit_bearings,
-                    current_way=way, junction=junction
-                )
+                # Determine which way to go at junction
+                chosen_bearing = None
+                turn_direction = None
+
+                if route_waypoints:
+                    # Route-guided mode: find exit that leads toward next waypoint
+                    chosen_bearing, turn_direction = self._find_route_guided_exit(
+                        junction, current_bearing, exit_bearings, route_waypoints
+                    )
+
+                if chosen_bearing is None:
+                    # Fall back to straight-on
+                    chosen_bearing = self._find_straight_on(
+                        current_bearing, exit_bearings,
+                        current_way=way, junction=junction
+                    )
+                    if chosen_bearing is not None:
+                        turn_direction = "straight"
 
                 junctions.append(JunctionInfo(
                     lat=junction.lat,
@@ -419,14 +441,15 @@ class PathProjector:
                     distance_m=total_distance,
                     is_t_junction=junction.is_t_junction,
                     exit_bearings=exit_bearings,
-                    straight_on_bearing=straight_bearing,
+                    straight_on_bearing=chosen_bearing,
                     node_id=junction.node_id,
+                    turn_direction=turn_direction,
                 ))
 
-                # Follow straight-on road
-                if straight_bearing is not None:
+                # Follow chosen road
+                if chosen_bearing is not None:
                     next_way, next_forward = self._find_way_with_bearing(
-                        junction, straight_bearing, way_id
+                        junction, chosen_bearing, way_id
                     )
                     if next_way and next_way not in visited_ways:
                         way_id = next_way
@@ -435,7 +458,7 @@ class PathProjector:
                         node_idx = 0 if next_forward else len(self.network.ways[way_id].nodes) - 1
                         continue
 
-                break  # No straight-on continuation found
+                break  # No continuation found
 
             # Not a junction - try to find connecting way
             connected_ways = self.network.node_to_ways.get(end_node_id, [])
@@ -653,3 +676,86 @@ class PathProjector:
                         return way_id, False
 
         return None, False
+
+    def _find_route_guided_exit(
+        self,
+        junction: Junction,
+        arrival_bearing: float,
+        exit_bearings: List[float],
+        route_waypoints: List[Tuple[float, float]],
+    ) -> Tuple[Optional[float], Optional[str]]:
+        """
+        Find which exit best matches the GPX route direction.
+
+        Args:
+            junction: The junction we're at
+            arrival_bearing: Bearing we arrived from
+            exit_bearings: Available exit bearings
+            route_waypoints: GPX route points to follow
+
+        Returns:
+            (chosen_bearing, turn_direction) where turn_direction is "left", "right", or "straight"
+        """
+        if not exit_bearings or not route_waypoints:
+            return None, None
+
+        # Find the next route waypoint that's past the junction
+        # Look for waypoints that are roughly ahead of us
+        junction_lat, junction_lon = junction.lat, junction.lon
+
+        # Find closest waypoint to junction to sync position
+        best_idx = 0
+        best_dist = float('inf')
+        for i, (lat, lon) in enumerate(route_waypoints):
+            dist = haversine_distance(junction_lat, junction_lon, lat, lon)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = i
+
+        # Look at waypoints after current position to determine direction
+        # Use a waypoint that's 50-200m ahead for direction
+        target_waypoint = None
+        for i in range(best_idx + 1, min(best_idx + 20, len(route_waypoints))):
+            lat, lon = route_waypoints[i]
+            dist = haversine_distance(junction_lat, junction_lon, lat, lon)
+            if dist > 50:  # At least 50m away
+                target_waypoint = (lat, lon)
+                break
+
+        if not target_waypoint:
+            # Use last available waypoint
+            if best_idx + 1 < len(route_waypoints):
+                target_waypoint = route_waypoints[best_idx + 1]
+            else:
+                return None, None
+
+        # Calculate bearing from junction to target waypoint
+        route_bearing = bearing(
+            junction_lat, junction_lon,
+            target_waypoint[0], target_waypoint[1]
+        )
+
+        # Find exit that best matches route direction
+        best_exit = None
+        best_diff = float('inf')
+        for exit_b in exit_bearings:
+            diff = abs(angle_difference(route_bearing, exit_b))
+            if diff < best_diff:
+                best_diff = diff
+                best_exit = exit_b
+
+        # Only accept if within 60 degrees of route direction
+        if best_exit is None or best_diff > 60:
+            return None, None
+
+        # Determine turn direction relative to arrival bearing
+        turn_angle = angle_difference(arrival_bearing, best_exit)
+
+        if abs(turn_angle) < 30:
+            turn_direction = "straight"
+        elif turn_angle < 0:
+            turn_direction = "left"
+        else:
+            turn_direction = "right"
+
+        return best_exit, turn_direction

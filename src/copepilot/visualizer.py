@@ -23,6 +23,8 @@ class MapVisualizer:
         self,
         network: RoadNetwork,
         route_bounds: tuple = None,
+        follow_car: bool = True,
+        view_distance_m: float = 1000,
     ):
         """
         Initialize visualizer.
@@ -30,11 +32,15 @@ class MapVisualizer:
         Args:
             network: Road network to display
             route_bounds: Optional (min_lat, max_lat, min_lon, max_lon) for view
+            follow_car: If True, viewport follows the car (default)
+            view_distance_m: Distance ahead to show when following car (meters)
         """
         if not MATPLOTLIB_AVAILABLE:
             raise ImportError("matplotlib required: pip install matplotlib")
 
         self.network = network
+        self.follow_car = follow_car
+        self.view_distance_m = view_distance_m
 
         self.fig, self.ax = plt.subplots(1, 1, figsize=(10, 10), dpi=100)
         self.ax.set_aspect('equal')
@@ -48,8 +54,8 @@ class MapVisualizer:
         # Draw road network once
         self._draw_roads()
 
-        # Set initial bounds if provided
-        if route_bounds:
+        # Set initial bounds if provided and not following car
+        if route_bounds and not follow_car:
             margin = 0.0005
             self.ax.set_xlim(route_bounds[2] - margin, route_bounds[3] + margin)
             self.ax.set_ylim(route_bounds[0] - margin, route_bounds[1] + margin)
@@ -152,9 +158,17 @@ class MapVisualizer:
             lon, lat, 'o', color='lime', markersize=12, markeredgecolor='white', markeredgewidth=2
         )[0]
 
-        # Use fixed bounds based on route (set once), so car visibly moves
-        if self._bounds is None and path and path.points:
-            # Get route extent
+        # Update viewport
+        if self.follow_car:
+            # Center on car with view_distance_m visible in each direction
+            # Map is north-up, so center the car for all headings
+            import math
+            lat_delta = self.view_distance_m / 111000
+            lon_delta = self.view_distance_m / (111000 * math.cos(math.radians(lat)))
+            self.ax.set_xlim(lon - lon_delta, lon + lon_delta)
+            self.ax.set_ylim(lat - lat_delta, lat + lat_delta)  # Centered
+        elif self._bounds is None and path and path.points:
+            # Use fixed bounds based on route (set once), so car visibly moves
             all_lats = [p.lat for p in path.points]
             all_lons = [p.lon for p in path.points]
             margin = 0.002

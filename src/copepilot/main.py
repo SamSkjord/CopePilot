@@ -1,6 +1,7 @@
 """Main CopePilot application loop."""
 
 import argparse
+import threading
 import time
 from pathlib import Path
 from typing import Optional, Protocol
@@ -59,6 +60,9 @@ class CopePilot:
         self._projector: Optional[PathProjector] = None
         self._last_fetch_pos: Optional[Position] = None
         self._visualizer = None
+        self._loading_thread: Optional[threading.Thread] = None
+        self._pending_network: Optional[RoadNetwork] = None
+        self._pending_pos: Optional[Position] = None
 
     def run(self) -> None:
         """Main application loop."""
@@ -89,21 +93,35 @@ class CopePilot:
         if not pos:
             return
 
-        # Fetch new road data if we've moved significantly
+        # Check if background load completed
+        if self._pending_network is not None:
+            self._apply_pending_network()
+
+        # Fetch road data if needed
         if self._should_refetch(pos):
-            self._fetch_roads(pos)
+            if self._network is None:
+                # First load - block so we have data to start with
+                self._fetch_roads_sync(pos)
+            else:
+                # Subsequent loads - async to avoid blocking visualizer
+                self._fetch_roads_async(pos)
 
         if not self._network or not self._projector:
             return
 
-        # Project path ahead based on heading
-        path = self._projector.project_path(
-            pos.lat, pos.lon, pos.heading, self.lookahead
-        )
+        # Get path ahead - use road network projection with optional GPX route guidance
+        route_waypoints = None
+        if hasattr(self.gps, 'get_upcoming_path'):
+            # GPX mode: get route waypoints to guide junction decisions
+            route_waypoints = self.gps.get_upcoming_path(self.lookahead)
 
+        # Project path from road network (optionally guided by GPX route)
+        path = self._projector.project_path(
+            pos.lat, pos.lon, pos.heading, self.lookahead,
+            route_waypoints=route_waypoints
+        )
         if not path or len(path.points) < 5:
             return
-
         # Extract geometry from path
         points = [(p.lat, p.lon) for p in path.points]
 
@@ -144,47 +162,44 @@ class CopePilot:
 
     def _should_refetch(self, pos: Position) -> bool:
         """Check if we need to fetch new road data."""
+        # Don't start new load if one is already in progress
+        if self._loading_thread is not None and self._loading_thread.is_alive():
+            return False
+
         if not self._last_fetch_pos or not self._network:
             return True
-
-        # In simulation mode, only refetch if we've moved very far
-        # (basically never, since we load a large area initially)
-        if self.simulation_mode:
-            return False
 
         distance = haversine_distance(
             self._last_fetch_pos.lat, self._last_fetch_pos.lon,
             pos.lat, pos.lon,
         )
+
+        # In simulation mode, use larger threshold (half the load radius)
+        # to avoid frequent reloads while still covering long routes
+        if self.simulation_mode:
+            return distance > 2500  # Refetch when 2.5km from last load center
+
         return distance > config.REFETCH_DISTANCE_M
 
-    def _fetch_roads(self, pos: Position) -> None:
-        """Fetch road data from OSM PBF."""
-        print(f"Loading roads near {pos.lat:.4f}, {pos.lon:.4f}...")
-
-        # Use larger radius in simulation mode to avoid refetching
-        # 5km is enough for most routes and loads much faster than 10km
+    def _fetch_roads_sync(self, pos: Position) -> None:
+        """Fetch road data synchronously (blocks until complete)."""
         radius = 5000 if self.simulation_mode else config.ROAD_FETCH_RADIUS_M
 
         try:
-            self._network = self.map_loader.load_around(
-                pos.lat, pos.lon, radius
-            )
+            print(f"Loading roads near {pos.lat:.4f}, {pos.lon:.4f}...")
+            self._network = self.map_loader.load_around(pos.lat, pos.lon, radius)
             self._projector = PathProjector(self._network)
             self._last_fetch_pos = pos
 
             print(f"Loaded {len(self._network.ways)} roads, "
                   f"{len(self._network.junctions)} junctions")
 
-            # Share network with simulator if it needs it for route building
             if hasattr(self.gps, 'set_network'):
                 self.gps.set_network(self._network)
 
-            # Initialize visualizer if enabled
             if self.visualize and not self._visualizer:
                 try:
                     from .visualizer import MapVisualizer
-                    # Get route bounds from simulator if available
                     route_bounds = None
                     if hasattr(self.gps, 'get_route_bounds'):
                         route_bounds = self.gps.get_route_bounds()
@@ -195,6 +210,56 @@ class CopePilot:
                     self.visualize = False
         except Exception as e:
             print(f"Error loading roads: {e}")
+
+    def _fetch_roads_async(self, pos: Position) -> None:
+        """Start background thread to fetch road data."""
+        radius = 5000 if self.simulation_mode else config.ROAD_FETCH_RADIUS_M
+
+        def load_in_background():
+            try:
+                print(f"Loading roads near {pos.lat:.4f}, {pos.lon:.4f}...")
+                network = self.map_loader.load_around(pos.lat, pos.lon, radius)
+                # Store for main thread to pick up
+                self._pending_network = network
+                self._pending_pos = pos
+            except Exception as e:
+                print(f"Error loading roads: {e}")
+
+        self._loading_thread = threading.Thread(target=load_in_background, daemon=True)
+        self._loading_thread.start()
+
+    def _apply_pending_network(self) -> None:
+        """Apply network loaded by background thread."""
+        if self._pending_network is None:
+            return
+
+        self._network = self._pending_network
+        self._projector = PathProjector(self._network)
+        self._last_fetch_pos = self._pending_pos
+
+        print(f"Loaded {len(self._network.ways)} roads, "
+              f"{len(self._network.junctions)} junctions")
+
+        # Share network with simulator if it needs it for route building
+        if hasattr(self.gps, 'set_network'):
+            self.gps.set_network(self._network)
+
+        # Initialize visualizer if enabled (only on first load)
+        if self.visualize and not self._visualizer:
+            try:
+                from .visualizer import MapVisualizer
+                route_bounds = None
+                if hasattr(self.gps, 'get_route_bounds'):
+                    route_bounds = self.gps.get_route_bounds()
+                self._visualizer = MapVisualizer(self._network, route_bounds)
+                print("Visualization window opened")
+            except ImportError as e:
+                print(f"Visualization unavailable: {e}")
+                self.visualize = False
+
+        # Clear pending
+        self._pending_network = None
+        self._pending_pos = None
 
 
 def main():
@@ -218,6 +283,11 @@ def main():
         "--vbo",
         type=Path,
         help="Replay GPS from VBO file",
+    )
+    gps_group.add_argument(
+        "--gpx",
+        type=Path,
+        help="Follow route from GPX file",
     )
 
     # General options
@@ -293,6 +363,19 @@ def main():
             speed_multiplier=args.speed_multiplier,
         )
 
+    elif args.gpx:
+        from .simulator import GPXSimulator
+        if not args.gpx.exists():
+            parser.error(f"GPX file not found: {args.gpx}")
+
+        print(f"GPX route mode: {args.gpx}")
+        print(f"Speed: {args.speed} m/s ({args.speed * 3.6:.1f} km/h)")
+
+        gps = GPXSimulator(
+            gpx_path=str(args.gpx),
+            speed_mps=args.speed,
+        )
+
     else:
         print(f"GPS mode: {args.gps_port}")
         gps = GPSReader(port=args.gps_port)
@@ -304,7 +387,7 @@ def main():
         lookahead_m=args.lookahead,
         audio_enabled=not args.no_audio,
         visualize=args.visualize,
-        simulation_mode=bool(args.simulate or args.vbo),
+        simulation_mode=bool(args.simulate or args.vbo or args.gpx),
     )
     app.run()
 

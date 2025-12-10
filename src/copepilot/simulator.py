@@ -1,7 +1,9 @@
 """Simulation mode for testing without GPS hardware."""
 
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
 from .gps import Position
@@ -241,5 +243,176 @@ class VBOSimulator:
                     ))
                 except (ValueError, IndexError):
                     continue
+
+        return points
+
+
+class GPXSimulator:
+    """Simulate GPS by following a GPX track file."""
+
+    def __init__(self, gpx_path: str, speed_mps: float = 13.4):
+        """
+        Initialize GPX simulator.
+
+        Args:
+            gpx_path: Path to GPX file
+            speed_mps: Speed to simulate in meters per second
+        """
+        self.gpx_path = Path(gpx_path)
+        self.speed = speed_mps
+        self._route_points: List[Tuple[float, float]] = []
+        self._route_index = 0
+        self._last_update = time.time()
+        self.current_lat = 0.0
+        self.current_lon = 0.0
+        self.current_heading = 0.0
+
+    def connect(self) -> None:
+        """Load and parse the GPX file."""
+        self._route_points = self._parse_gpx()
+        if self._route_points:
+            self.current_lat, self.current_lon = self._route_points[0]
+            # Calculate initial heading from first two points
+            if len(self._route_points) > 1:
+                self.current_heading = bearing(
+                    self._route_points[0][0], self._route_points[0][1],
+                    self._route_points[1][0], self._route_points[1][1]
+                )
+            print(f"Loaded GPX route with {len(self._route_points)} points")
+            print(f"Start: {self.current_lat:.4f}, {self.current_lon:.4f}, heading {self.current_heading:.0f}°")
+        else:
+            print("Warning: No points found in GPX file")
+
+    def disconnect(self) -> None:
+        """Clean up."""
+        pass
+
+    def set_network(self, network: RoadNetwork) -> None:
+        """Accept network (for compatibility) but don't use it - we follow GPX."""
+        # Reset time so first read_position doesn't jump
+        self._last_update = time.time()
+
+    def get_route_bounds(self) -> Optional[Tuple[float, float, float, float]]:
+        """Get bounds of the GPX route (min_lat, max_lat, min_lon, max_lon)."""
+        if not self._route_points:
+            return None
+        lats = [p[0] for p in self._route_points]
+        lons = [p[1] for p in self._route_points]
+        return (min(lats), max(lats), min(lons), max(lons))
+
+    def get_upcoming_path(self, max_distance: float = 1000) -> List[Tuple[float, float]]:
+        """Get upcoming route points within max_distance meters.
+
+        Returns list of (lat, lon) tuples for the path ahead.
+        """
+        if not self._route_points:
+            return []
+
+        # Start from current position
+        path = [(self.current_lat, self.current_lon)]
+        total_distance = 0.0
+
+        # Add upcoming points
+        for i in range(self._route_index + 1, len(self._route_points)):
+            pt = self._route_points[i]
+            prev_pt = path[-1]
+            dist = haversine_distance(prev_pt[0], prev_pt[1], pt[0], pt[1])
+            total_distance += dist
+
+            if total_distance > max_distance:
+                break
+            path.append(pt)
+
+        return path
+
+    def read_position(self) -> Optional[Position]:
+        """Return current position along GPX route."""
+        if not self._route_points:
+            return None
+
+        now = time.time()
+        dt = now - self._last_update
+        self._last_update = now
+
+        # Cap dt to prevent large jumps
+        dt = min(dt, 2.0)
+
+        distance_to_travel = self.speed * dt
+
+        while distance_to_travel > 0 and self._route_index < len(self._route_points) - 1:
+            next_pt = self._route_points[self._route_index + 1]
+
+            dist_to_next = haversine_distance(
+                self.current_lat, self.current_lon, next_pt[0], next_pt[1]
+            )
+
+            if distance_to_travel >= dist_to_next:
+                # Move to next waypoint
+                self.current_lat, self.current_lon = next_pt
+                self._route_index += 1
+                distance_to_travel -= dist_to_next
+
+                # Update heading for next segment
+                if self._route_index < len(self._route_points) - 1:
+                    next_next = self._route_points[self._route_index + 1]
+                    self.current_heading = bearing(
+                        self.current_lat, self.current_lon,
+                        next_next[0], next_next[1]
+                    )
+            else:
+                # Move partway to next waypoint
+                self.current_heading = bearing(
+                    self.current_lat, self.current_lon,
+                    next_pt[0], next_pt[1]
+                )
+                new_lat, new_lon = point_along_bearing(
+                    self.current_lat, self.current_lon,
+                    self.current_heading, distance_to_travel
+                )
+                self.current_lat, self.current_lon = new_lat, new_lon
+                break
+
+        return Position(
+            lat=self.current_lat,
+            lon=self.current_lon,
+            heading=self.current_heading,
+            speed=self.speed,
+        )
+
+    def _parse_gpx(self) -> List[Tuple[float, float]]:
+        """Parse GPX file and extract track points."""
+        points = []
+
+        try:
+            tree = ET.parse(self.gpx_path)
+            root = tree.getroot()
+
+            # Handle GPX namespace
+            ns = {'gpx': 'http://www.topografix.com/GPX/1/1'}
+
+            # Try to find trackpoints (trk/trkseg/trkpt)
+            for trkpt in root.findall('.//gpx:trkpt', ns):
+                lat = float(trkpt.get('lat'))
+                lon = float(trkpt.get('lon'))
+                points.append((lat, lon))
+
+            # If no trackpoints, try route points (rte/rtept)
+            if not points:
+                for rtept in root.findall('.//gpx:rtept', ns):
+                    lat = float(rtept.get('lat'))
+                    lon = float(rtept.get('lon'))
+                    points.append((lat, lon))
+
+            # If still no points, try without namespace (some GPX files)
+            if not points:
+                for trkpt in root.findall('.//trkpt'):
+                    lat = float(trkpt.get('lat'))
+                    lon = float(trkpt.get('lon'))
+                    points.append((lat, lon))
+
+        except ET.ParseError as e:
+            print(f"Error parsing GPX file: {e}")
+        except Exception as e:
+            print(f"Error reading GPX file: {e}")
 
         return points

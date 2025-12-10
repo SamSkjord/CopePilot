@@ -111,11 +111,17 @@ class PacenoteGenerator:
                 if note:
                     notes.append(note)
 
-        # Process junctions (warn if no straight-on option)
+        # Process junctions (warn if turning or if no straight-on option)
         for junction in junctions:
             if junction.distance_m <= self.junction_warn_distance:
-                # Warn about junctions where driver must make a choice
-                if junction.straight_on_bearing is None:
+                # Warn about junctions where:
+                # 1. No straight-on option (must turn) - traditional T-junction warning
+                # 2. Route-guided turn (going left or right per route)
+                should_warn = (
+                    junction.straight_on_bearing is None or
+                    (junction.turn_direction and junction.turn_direction != "straight")
+                )
+                if should_warn:
                     note = self._junction_to_note(junction)
                     if note:
                         notes.append(note)
@@ -521,8 +527,13 @@ class PacenoteGenerator:
         if distance_call:
             parts.append(distance_call)
 
-        # Warning - road ends, must turn
-        parts.append("junction")
+        # Junction with turn direction if route-guided
+        if junction.turn_direction and junction.turn_direction != "straight":
+            # Route-guided: "junction right" or "junction left"
+            parts.append(f"junction {junction.turn_direction}")
+        else:
+            # No route or going straight: just "junction"
+            parts.append("junction")
 
         text = " ".join(parts)
 

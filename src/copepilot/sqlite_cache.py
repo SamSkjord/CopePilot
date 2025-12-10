@@ -132,7 +132,9 @@ class SQLiteMapCache:
     def _get_conn(self) -> sqlite3.Connection:
         """Get database connection (lazy init)."""
         if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path))
+            # check_same_thread=False allows connection to be used across threads
+            # This is safe with WAL mode for concurrent reads
+            self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
             # Enable WAL mode for better concurrent access and crash safety
             self._conn.execute("PRAGMA journal_mode=WAL")
