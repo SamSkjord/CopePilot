@@ -1,10 +1,10 @@
-> **⚠️ WARNING: This project is for entertainment and educational purposes only. Do not use while driving on public roads. Always keep your eyes on the road and obey all traffic laws. The developers accept no responsibility for any accidents, injuries, or legal consequences resulting from the use of this software.**
+> **WARNING: This project is for entertainment and educational purposes only. Do not use while driving on public roads. Always keep your eyes on the road and obey all traffic laws. The developers accept no responsibility for any accidents, injuries, or legal consequences resulting from the use of this software.**
 
 <p align="center">
   <img src="logo.png" alt="CopePilot">
 </p>
 
-> **⚠️ WARNING: This project is for entertainment and educational purposes only. Do not use while driving on public roads. Always keep your eyes on the road and obey all traffic laws. The developers accept no responsibility for any accidents, injuries, or legal consequences resulting from the use of this software.**
+> **WARNING: This project is for entertainment and educational purposes only. Do not use while driving on public roads. Always keep your eyes on the road and obey all traffic laws. The developers accept no responsibility for any accidents, injuries, or legal consequences resulting from the use of this software.**
 
 Rally pacenote style driving assistance for your daily commute. Uses GPS and OpenStreetMap data to call out upcoming corners like a rally co-driver.
 
